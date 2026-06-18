@@ -16,7 +16,7 @@
     ]
   },
   {
-    "name": "Full /create_listing flow: title -> description -> price -> bedrooms -> location -> pick group -> done",
+    "name": "Full /create_listing flow: title -> description -> price -> bedrooms -> location -> pick group -> done -> post to group",
     "steps": [
       {
         "send": {
@@ -163,7 +163,21 @@
           {
             "method": "sendMessage",
             "payload": {
-              "text": "Listing #1 created.\nReady to post to 1 group(s) (E2T2 will publish the messages)."
+              "chat_id": -100900100001,
+              "text": "🏠 2BR Mission Loft\n$8,500.00 · 2 bedrooms · Mission, San Francisco\n\nSun-drenched loft in the heart of the Mission.",
+              "reply_markup": {
+                "inline_keyboard": [
+                  [
+                    { "text": "I'm interested", "callback_data": "interested:1" }
+                  ]
+                ]
+              }
+            }
+          },
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Listing #1 created.\nPosted to 1 group(s) with an \"I'm interested\" button."
             }
           }
         ]
@@ -248,7 +262,21 @@
           {
             "method": "sendMessage",
             "payload": {
-              "text": "Listing #1 created.\nReady to post to 1 group(s) (E2T2 will publish the messages)."
+              "chat_id": -100900100002,
+              "text": "🏠 Open House Sunday\n\nBring cookies.",
+              "reply_markup": {
+                "inline_keyboard": [
+                  [
+                    { "text": "I'm interested", "callback_data": "interested:1" }
+                  ]
+                ]
+              }
+            }
+          },
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Listing #1 created.\nPosted to 1 group(s) with an \"I'm interested\" button."
             }
           }
         ]

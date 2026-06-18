@@ -1,0 +1,98 @@
+[
+  {
+    "name": "/help lists the bot's commands",
+    "steps": [
+      {
+        "send": { "text": "/help" },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Here's what I can do:\n\n/start — Show the main menu\n/help  — Show this help message\n\nOr tap a button on the main menu to get started."
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "Unknown commands get a friendly fallback (no crash)",
+    "steps": [
+      {
+        "send": { "text": "/nonsense" },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Hmm, /nonsense isn't a command I know. Try /help to see what I can do."
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "Unknown commands handle the @botname suffix",
+    "steps": [
+      {
+        "send": { "text": "/nonsense@somebot" },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Hmm, /nonsense isn't a command I know. Try /help to see what I can do."
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "Unknown commands are case-insensitive (lowercased before lookup)",
+    "steps": [
+      {
+        "send": { "text": "/NONSENSE" },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Hmm, /nonsense isn't a command I know. Try /help to see what I can do."
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "A known command (e.g. /start) still reaches its handler after the unknown-command middleware",
+    "steps": [
+      {
+        "send": { "text": "/start" },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Welcome to HomeLeadBot, Test! 🏠\n\nI help real estate agents post listings, capture buyer leads, and deliver hot-lead notifications. Pick an option below to get started."
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "An error thrown by a handler is caught by the error boundary and replied to gracefully",
+    "steps": [
+      {
+        "send": { "text": "/bang" },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Sorry, something went wrong on my side. Please try again in a moment."
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

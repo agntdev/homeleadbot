@@ -34,12 +34,21 @@ export interface FollowupStore {
   markSent(id: number, sentAtIso: string): Promise<FollowupJobRecord | undefined>;
   cancel(id: number): Promise<FollowupJobRecord | undefined>;
   purgeOlderThanDays(retentionDays: number): Promise<number>;
+  /** E4T3 test-only: rewrite scheduled_at on the most recent pending
+   *  job for the lead so a test can fast-forward the 24h delay
+   *  without sleeping. No-op on Postgres. */
+  _setScheduledAtForLead(leadId: number, iso: string): void;
 }
 
 // --- PostgreSQL implementation ---------------------------------------------
 
 class PostgresFollowupStore implements FollowupStore {
   constructor(private readonly pool: PgPool) {}
+
+  /** E4T3 test-only: no-op on Postgres (the test harness uses in-memory). */
+  _setScheduledAtForLead(_leadId: number, _iso: string): void {
+    /* no-op */
+  }
 
   async schedule(input: FollowupJobInput): Promise<FollowupJobRecord> {
     const { rows } = await this.pool.query(
@@ -195,6 +204,18 @@ class InMemoryFollowupStore implements FollowupStore {
   _setCreatedAt(id: number, iso: string) {
     const j = this.rows.get(id);
     if (j) this.rows.set(id, { ...j, created_at: iso });
+  }
+
+  /** Test-only: rewrite scheduled_at on the most recent pending job for
+   *  the given lead so a test can fast-forward the 24h delay without
+   *  sleeping. */
+  _setScheduledAtForLead(leadId: number, iso: string) {
+    for (const [id, j] of this.rows) {
+      if (j.lead_id === leadId && j.status === "pending") {
+        this.rows.set(id, { ...j, scheduled_at: iso });
+        return;
+      }
+    }
   }
 }
 

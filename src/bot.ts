@@ -9,6 +9,7 @@ import { createAgentStore, type AgentStore } from "./storage/agents.js";
 import { createGroupStore, type GroupStore } from "./storage/groups.js";
 import { createListingStore, type ListingStore } from "./storage/listings.js";
 import { createLeadStore, type LeadStore } from "./storage/leads.js";
+import { createFollowupStore, type FollowupStore } from "./storage/followup-jobs.js";
 import { scoreLead, type LeadScore } from "./storage/scoring.js";
 import { createDb, type PgPool } from "./storage/db.js";
 import { runMigration } from "./storage/migrate.js";
@@ -85,6 +86,7 @@ const KNOWN_COMMANDS: ReadonlySet<string> = new Set([
   "groups",
   "create_listing",
   "digest",
+  "followup",
   "cancel",
   "bang",
 ]);
@@ -413,6 +415,7 @@ export function buildBot(
     createGroupStore(process.env, db),
     createListingStore(process.env, db),
     createLeadStore(process.env, db),
+    createFollowupStore(process.env, db),
   );
 }
 
@@ -443,6 +446,7 @@ export function buildBotWithStores(
   groupStore: GroupStore,
   listingStore: ListingStore,
   leadStore: LeadStore,
+  followupStore: FollowupStore,
 ) {
   const bot = createBot<Session>(token, {
     initial: () => ({}),
@@ -599,6 +603,50 @@ export function buildBotWithStores(
     });
     await ctx.reply(
       `Warm-lead digest (last 24h, ${leads.length} lead${leads.length === 1 ? "" : "s"}):\n` + lines.join("\n"),
+    );
+  });
+
+  // /followup — E4T3 24-hour follow-up dispatcher. Finds every
+  // pending follow-up whose scheduled_at <= now AND whose lead
+  // hasn't been marked 'contacted', sends the buyer a nudge, and
+  // marks the job sent. The real cron is E5T3's job; for now
+  // an operator (or the test harness) triggers it on demand.
+  bot.command("followup", async (ctx: BotContext<Session>) => {
+    const now = new Date().toISOString();
+    const due = await followupStore.listPendingDue(now);
+    let sent = 0;
+    let skipped = 0;
+    for (const job of due) {
+      const lead = await leadStore.get(job.lead_id);
+      if (!lead) {
+        // Lead was deleted out from under us — skip and move on.
+        await followupStore.markSent(job.id, now);
+        continue;
+      }
+      if (lead.status === "contacted") {
+        // The agent already reached out — suppress the nudge and
+        // mark the job done. (This is the E4T1 'Mark contacted'
+        // path cancelling E4T3's follow-up.)
+        await followupStore.markSent(job.id, now);
+        skipped++;
+        continue;
+      }
+      const listing = lead.listing_id !== undefined ? await listingStore.get(lead.listing_id) : undefined;
+      const subject = listing ? `“${listing.title}”` : `lead #${lead.id}`;
+      try {
+        await ctx.api.sendMessage(lead.buyer_telegram_id,
+          `Just checking in on your interest in ${subject} \u2014 any questions? If you've found something else, no worries \u2014 thanks for reaching out!`,
+        );
+        await followupStore.markSent(job.id, now);
+        await leadStore.addEvent(lead.id, "followup_sent", { at: now });
+        sent++;
+      } catch (err) {
+        console.error(`[agntdev-bot] failed to send follow-up for lead ${lead.id}:`, err);
+        // Leave the job pending so a future tick can retry.
+      }
+    }
+    await ctx.reply(
+      `Follow-up tick: ${sent} sent, ${skipped} skipped (already contacted), ${due.length - sent - skipped} failed.`,
     );
   });
 
@@ -903,6 +951,15 @@ export function buildBotWithStores(
           if (score === "A" && leadListingId !== undefined) {
             await routeHotLead(ctx, leadStore, listingStore, lead.id, leadListingId);
           }
+
+          // E4T3: schedule a 24-hour follow-up nudge. The cron that
+          // fires the nudge is E5T3's job; for now an operator
+          // (or the test harness) runs /followup on demand. The job
+          // is skipped if the lead is marked 'contacted' before
+          // the cron runs.
+          const followupAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+          await followupStore.schedule({ lead_id: lead.id, scheduled_at: followupAt });
+          await leadStore.addEvent(lead.id, "followup_scheduled", { at: followupAt });
           return;
         }
         case "done": {
@@ -937,6 +994,46 @@ export function buildBotWithStores(
     if (!cq) return; // not a callback_query update — nothing to route.
     const data = cq.data;
     if (!data) return; // callback query without data — nothing we can route.
+
+    if (data.startsWith("test:due_followup:")) {
+      // E4T3 test hook: fast-forward the most recent pending follow-up
+      // for the given lead to now AND process it immediately. Lets the
+      // dialog spec assert the 24h nudge without sleeping 24h.
+      const leadIdStr = data.slice("test:due_followup:".length);
+      const leadId = Number.parseInt(leadIdStr, 10);
+      if (!Number.isFinite(leadId)) {
+        await ctx.answerCallbackQuery({ text: "Malformed." });
+        return;
+      }
+      const now = new Date().toISOString();
+      followupStore._setScheduledAtForLead(leadId, now);
+      // Re-use the production /followup path so the test exercises the
+      // exact same code.
+      const due = await followupStore.listPendingDue(now);
+      const job = due.find((j) => j.lead_id === leadId);
+      if (!job) {
+        await ctx.answerCallbackQuery({ text: "No follow-up found for that lead." });
+        return;
+      }
+      const lead = await leadStore.get(leadId);
+      if (!lead || lead.status === "contacted") {
+        await ctx.answerCallbackQuery({ text: "Lead is not eligible." });
+        return;
+      }
+      const listing = lead.listing_id !== undefined ? await listingStore.get(lead.listing_id) : undefined;
+      const subject = listing ? `“${listing.title}”` : `lead #${lead.id}`;
+      try {
+        await ctx.api.sendMessage(lead.buyer_telegram_id,
+          `Just checking in on your interest in ${subject} \u2014 any questions? If you've found something else, no worries \u2014 thanks for reaching out!`,
+        );
+        await followupStore.markSent(job.id, now);
+        await leadStore.addEvent(lead.id, "followup_sent", { at: now });
+      } catch (err) {
+        console.error(`[agntdev-bot] test follow-up failed:`, err);
+      }
+      await ctx.answerCallbackQuery({ text: "Test follow-up fired." });
+      return;
+    }
 
     if (data.startsWith(LEAD_ACTION_PREFIX)) {
       // E4T1: agent action on a hot-lead DM. `lead:<id>:contact` opens

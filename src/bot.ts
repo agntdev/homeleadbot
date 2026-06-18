@@ -9,6 +9,7 @@ import { createAgentStore, type AgentStore } from "./storage/agents.js";
 import { createGroupStore, type GroupStore } from "./storage/groups.js";
 import { createListingStore, type ListingStore } from "./storage/listings.js";
 import { createLeadStore, type LeadStore } from "./storage/leads.js";
+import { scoreLead, type LeadScore } from "./storage/scoring.js";
 import { createDb, type PgPool } from "./storage/db.js";
 import { runMigration } from "./storage/migrate.js";
 
@@ -747,8 +748,21 @@ export function buildBotWithStores(
             await leadStore.addIntakeItem(lead.id, q, a, i);
           }
           await leadStore.addEvent(lead.id, "intake_completed", { skipped_count: 5 - intakeRows.length });
+
+          // E3T2: compute the lead's A/B/C tier from the captured
+          // pre_approval + timeline and persist it on the lead row.
+          // The score is shown to the buyer so they know what tier
+          // their request was assigned; the agent sees it via the
+          // /groups + future lead-routing work (E4T1).
+          const score: LeadScore = scoreLead({
+            ...(data.pre_approval !== undefined ? { pre_approval: data.pre_approval } : {}),
+            ...(data.timeline !== undefined ? { timeline: data.timeline } : {}),
+          });
+          await leadStore.update(lead.id, { score });
+          await leadStore.addEvent(lead.id, "score_calculated", { score });
+          const scoreLabel = score === "A" ? "hot" : score === "B" ? "warm" : "cold";
           await ctx.reply(
-            `Thanks! Your lead has been recorded (lead #${lead.id}). The agent will reach out soon.`,
+            `Thanks! Your lead has been recorded (lead #${lead.id}, tier ${score} — ${scoreLabel}). The agent will reach out soon.`,
           );
           return;
         }

@@ -22,6 +22,37 @@ const MAIN_MENU_BUTTONS: ReadonlyArray<{ text: string; data: string; note: strin
   { text: "❓ Help",          data: `${MENU_PREFIX}help`,           note: "List the bot's commands (T03)." },
 ];
 
+/** Commands the bot currently recognises (T03). Kept in sync with `bot.command`
+ *  registrations below so the unknown-command middleware doesn't shadow them. */
+const KNOWN_COMMANDS: ReadonlySet<string> = new Set([
+  "start",
+  "help",
+  "bang",
+]);
+
+/** Render the help text (T03). Kept as a pure function so the tests can assert
+ *  against it without spinning a real bot. */
+export function helpText(): string {
+  return [
+    "Here's what I can do:",
+    "",
+    "/start — Show the main menu",
+    "/help  — Show this help message",
+    "",
+    "Or tap a button on the main menu to get started.",
+  ].join("\n");
+}
+
+/** Friendly reply for an unknown /command (T03). */
+function unknownCommandReply(cmd: string): string {
+  return `Hmm, /${cmd} isn't a command I know. Try /help to see what I can do.`;
+}
+
+/** Graceful error reply when a handler throws (T03). The user sees this
+ *  instead of the bot silently dying on a network blip or bad input. */
+const ERROR_BOUNDARY_REPLY =
+  "Sorry, something went wrong on my side. Please try again in a moment.";
+
 /**
  * buildBot — assembles the bot and registers every handler, but does NOT start
  * it. Shared by the runtime entry (src/index.ts) and the Tests-gate harness
@@ -33,10 +64,32 @@ export function buildBot(token: string) {
     initial: () => ({}),
   });
 
+  // Global error boundary (T03). Installed FIRST via bot.use so it wraps every
+  // subsequent middleware (session, command handlers, callback router, etc.)
+  // — when anything downstream throws, this catches it and sends a graceful
+  // user-facing reply. The test harness reaches this through `handleUpdate`
+  // (the polling-layer `bot.catch` is only invoked by long polling), so this
+  // is the boundary the dialog tests actually exercise.
+  bot.use(async (ctx, next) => {
+    try {
+      await next();
+    } catch (err) {
+      console.error("[agntdev-bot] unhandled error:", err);
+      try {
+        await ctx.reply(ERROR_BOUNDARY_REPLY);
+      } catch (replyErr) {
+        // The boundary must NEVER throw — a secondary failure here would mask
+        // the original error and risk crashing the polling loop.
+        console.error("[agntdev-bot] failed to send error reply:", replyErr);
+      }
+      // Swallow — the error is gracefully handled. (If we rethrew, the
+      // polling-layer `bot.catch` would also fire and double-log.)
+    }
+  });
+
   // /start — HomeLeadBot welcome + the bot's main menu (T02). T02 owns the
   // menu structure; later feature tasks (E1T1, E2T1, E3T1, etc.) deepen the
-  // individual menu routes with real flows. (T01 shipped a simpler HomeLeadBot
-  // welcome — T02 supersedes it by adding the inline-keyboard menu.)
+  // individual menu routes with real flows.
   bot.command("start", async (ctx: BotContext<Session>) => {
     const name = ctx.from?.first_name ?? "there";
     const keyboard = inlineKeyboard([
@@ -57,6 +110,35 @@ export function buildBot(token: string) {
     );
   });
 
+  // /help — list the bot's commands (T03).
+  bot.command("help", async (ctx: BotContext<Session>) => {
+    await ctx.reply(helpText());
+  });
+
+  // /bang — debug hook: intentionally throws so operators (and the test
+  // harness) can verify the error boundary is alive. The boundary's graceful
+  // reply is the contract — without /bang, a real bug would also be caught
+  // by the boundary but with no way to confirm in a live deployment.
+  bot.command("bang", async () => {
+    throw new Error("intentional /bang error (used to verify the error boundary)");
+  });
+
+  // Unknown-command fallback (T03). Intercepts every inbound message BEFORE
+  // the command router: if the message starts with a /command that isn't in
+  // KNOWN_COMMANDS, reply with a friendly nudge and stop the chain so the
+  // command router never sees it. Passes through to next() otherwise, so
+  // known commands (and non-command text) reach their normal handlers.
+  bot.on("message", async (ctx: BotContext<Session>, next) => {
+    const msg = ctx.message;
+    if (!msg || !msg.text || !msg.text.startsWith("/")) return next();
+    const entity = msg.entities?.find((e) => e.type === "bot_command");
+    if (!entity) return next();
+    const raw = msg.text.substring(entity.offset + 1, entity.offset + entity.length);
+    const cmd = raw.split("@")[0]!.toLowerCase();
+    if (KNOWN_COMMANDS.has(cmd)) return next();
+    await ctx.reply(unknownCommandReply(cmd));
+  });
+
   // Main-menu router. Each button gets an honest acknowledgement now (the
   // spinner stops) and a one-line note about the feature in flight. Future
   // tasks will replace the per-route handler with the real flow.
@@ -66,6 +148,14 @@ export function buildBot(token: string) {
     const route = MAIN_MENU_BUTTONS.find((b) => b.data === cq.data);
     if (!route) return; // not for us — let other handlers / the unknown-command fallback deal with it.
     await ctx.answerCallbackQuery({ text: route.note });
+  });
+
+  // Polling-layer error boundary (T03). Catches anything that escapes the
+  // middleware stack (e.g. errors thrown by the transformer chain or by
+  // long-polling internals). The middleware-level boundary above handles
+  // handler errors; this is the second line of defence.
+  bot.catch((err) => {
+    console.error("[agntdev-bot] polling-layer error:", err);
   });
 
   return bot;

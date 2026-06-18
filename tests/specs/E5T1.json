@@ -1,0 +1,18 @@
+[
+  {
+    "name": "E5T1: storage layer wiring is intact — the bot still answers /start after the PostgreSQL migration module is added",
+    "steps": [
+      {
+        "send": { "text": "/start", "userId": 6001 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Welcome to HomeLeadBot, Test! \ud83c\udfe0\n\nYou're registered as an agent. I help you post listings, capture buyer leads, and deliver hot-lead notifications. Pick an option below to get started."
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

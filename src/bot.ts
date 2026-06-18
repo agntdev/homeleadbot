@@ -5,6 +5,9 @@ import {
   inlineKeyboard,
 } from "./toolkit/index.js";
 import { createAgentStore, type AgentStore } from "./storage/agents.js";
+import { createGroupStore, type GroupStore } from "./storage/groups.js";
+import { createDb, type PgPool } from "./storage/db.js";
+import { runMigration } from "./storage/migrate.js";
 
 // The per-chat session shape (ephemeral conversation state only). Extend as the
 // bot grows. Durable domain data must NOT live here — use the toolkit's
@@ -59,19 +62,51 @@ const ERROR_BOUNDARY_REPLY =
  * it. Shared by the runtime entry (src/index.ts) and the Tests-gate harness
  * (src/harness-entry.ts) so both exercise the exact same bot. Add new commands
  * and flows here.
+ *
+ * Sync on purpose: the test harness's runner calls makeBot() synchronously
+ * (see src/toolkit/harness/run-specs.ts), so the bot must be buildable without
+ * any async setup. Schema migration and DB connection are the caller's
+ * responsibility — see `runMigrationsAndBuildBot()` for the production
+ * startup wrapper, and `index.ts` for the wiring.
  */
-export function buildBot(token: string) {
-  const agentStore = createAgentStore();
-  return buildBotWithStore(token, agentStore);
+export function buildBot(
+  token: string,
+  opts: { db?: PgPool | null } = {},
+) {
+  const db = opts.db ?? null;
+  return buildBotWithStores(
+    token,
+    createAgentStore(process.env, db),
+    createGroupStore(process.env, db),
+  );
 }
 
 /**
- * buildBotWithStore — same as buildBot, but takes an explicit AgentStore.
- * Used by the test harness (and any future integration tests) to inject a
- * deterministic store. Production code goes through buildBot() which calls
- * createAgentStore() and reads REDIS_URL.
+ * runMigrationsAndBuildBot — production startup wrapper: opens the
+ * PostgreSQL pool (if DATABASE_URL is set), runs the idempotent schema
+ * migration, then builds the bot. Throws on migration failure so the
+ * platform's restart policy can recycle the process. Without DATABASE_URL
+ * the build proceeds with Redis (REDIS_URL) or in-memory storage.
  */
-export function buildBotWithStore(token: string, agentStore: AgentStore) {
+export async function runMigrationsAndBuildBot(token: string) {
+  const db = createDb();
+  if (db) {
+    await runMigration(db);
+  }
+  return buildBot(token, { db });
+}
+
+/**
+ * buildBotWithStores — same as buildBot, but takes explicit stores. Used by
+ * the test harness (and any future integration tests) to inject deterministic
+ * storage. Production code goes through runMigrationsAndBuildBot() which
+ * calls the create* factories and reads DATABASE_URL / REDIS_URL.
+ */
+export function buildBotWithStores(
+  token: string,
+  agentStore: AgentStore,
+  groupStore: GroupStore,
+) {
   const bot = createBot<Session>(token, {
     initial: () => ({}),
   });

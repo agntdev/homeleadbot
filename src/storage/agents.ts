@@ -5,20 +5,18 @@ import {
   RedisSessionStorage,
   type RedisLike,
 } from "../toolkit/session/redis.js";
+import type { PgPool } from "./db.js";
 
 /**
- * Durable agent record (E1T1). One per Telegram user who has run /start. The
- * record is keyed by Telegram user ID, lives in Redis (when REDIS_URL is set)
- * or in-memory (dev / test harness), and is the source of truth for "this user
- * is a registered HomeLeadBot agent". Lead-notification routing (E4) reads
- * from this store to find the claiming agent for a Telegram user.
- *
- * NOTE: this is intentionally a flat record. Group claims, listings, and leads
- * land in their own stores (E1T2, E2T1, E3T1, E5). Don't grow this struct —
- * add a new store + a foreign-key reference instead.
+ * Durable agent record (E1T1, E5T1). One per Telegram user who has run
+ * /start. Keyed by Telegram user ID; lives in PostgreSQL (when DATABASE_URL
+ * is set), Redis (when REDIS_URL is set, legacy), or in-memory (test /
+ * dev). Source of truth for "this user is a registered HomeLeadBot agent"
+ * — lead-notification routing (E4) reads from this store to find the
+ * claiming agent for a Telegram user.
  */
 export interface AgentRecord {
-  /** Telegram user ID — unique, immutable. The Redis key. */
+  /** Telegram user ID — unique, immutable. The Redis key / Postgres PK. */
   telegram_id: number;
   /** Best display name we have for the user. Falls back to "user<id>". */
   display_name: string;
@@ -40,11 +38,10 @@ export interface TelegramUserRef {
 }
 
 /**
- * AgentStore — durable key-value store keyed by Telegram user ID. Backed by
- * the toolkit's RedisSessionStorage (prefix `agent:`) when REDIS_URL is set,
- * and by MemorySessionStorage otherwise. The two share a grammY
- * StorageAdapter interface, so swapping the backend is a one-line factory
- * change.
+ * AgentStore — durable key-value store keyed by Telegram user ID. The class
+ * is backend-agnostic: the storage adapter is injected, so the same class
+ * fronts the PostgreSQL, Redis, and in-memory implementations. The factory
+ * `createAgentStore()` picks the backend.
  */
 export class AgentStore {
   constructor(private readonly storage: StorageAdapter<AgentRecord>) {}
@@ -95,16 +92,101 @@ function composeDisplayName(user: TelegramUserRef): string {
 }
 
 /**
- * createAgentStore — build the right AgentStore for the current environment.
- * Mirrors the toolkit's session-storage auto-select: Redis if REDIS_URL is
- * set, else in-memory. Always returns a concrete store — there is no "no
- * storage" code path (E1T1's contract is that /start ALWAYS registers).
+ * PostgresAgentAdapter — grammY StorageAdapter backed by the `agents` table.
+ * Implements the read / write / delete / has / readAllKeys surface. Key is
+ * the string form of the Telegram user ID; the column `telegram_id` is
+ * BIGINT. Timestamps are stored as ISO 8601 strings (TEXT) so the schema
+ * is easy to inspect without a timezone dance.
  */
-export function createAgentStore(env: { REDIS_URL?: string } = process.env): AgentStore {
+class PostgresAgentAdapter implements StorageAdapter<AgentRecord> {
+  constructor(private readonly pool: PgPool) {}
+
+  async read(key: string): Promise<AgentRecord | undefined> {
+    const { rows } = await this.pool.query(
+      "SELECT telegram_id, display_name, username, registered_at, updated_at FROM agents WHERE telegram_id = $1",
+      [Number(key)],
+    );
+    const row = (rows as AgentRow[])[0];
+    return row ? rowToRecord(row) : undefined;
+  }
+
+  async write(key: string, value: AgentRecord): Promise<void> {
+    // ON CONFLICT updates the mutable fields and bumps updated_at, but
+    // preserves the original registered_at (we pass COALESCE so a re-insert
+    // can't accidentally reset it).
+    await this.pool.query(
+      `INSERT INTO agents (telegram_id, display_name, username, registered_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (telegram_id) DO UPDATE SET
+         display_name = EXCLUDED.display_name,
+         username     = EXCLUDED.username,
+         updated_at   = EXCLUDED.updated_at`,
+      [
+        Number(key),
+        value.display_name,
+        value.username ?? null,
+        value.registered_at,
+        value.updated_at,
+      ],
+    );
+  }
+
+  async delete(key: string): Promise<void> {
+    await this.pool.query("DELETE FROM agents WHERE telegram_id = $1", [Number(key)]);
+  }
+
+  async has(key: string): Promise<boolean> {
+    const { rows } = await this.pool.query(
+      "SELECT 1 FROM agents WHERE telegram_id = $1 LIMIT 1",
+      [Number(key)],
+    );
+    return (rows as unknown[]).length > 0;
+  }
+
+  readAllKeys(): AsyncIterableIterator<string> {
+    return (async function* (this: PostgresAgentAdapter) {
+      const { rows } = await this.pool.query(
+        "SELECT telegram_id FROM agents",
+      );
+      for (const r of rows as Array<{ telegram_id: string | number }>) {
+        yield String(r.telegram_id);
+      }
+    }).call(this);
+  }
+}
+
+interface AgentRow {
+  telegram_id: string | number;
+  display_name: string;
+  username: string | null;
+  registered_at: string;
+  updated_at: string;
+}
+
+function rowToRecord(row: AgentRow): AgentRecord {
+  return {
+    telegram_id: Number(row.telegram_id),
+    display_name: row.display_name,
+    ...(row.username ? { username: row.username } : {}),
+    registered_at: row.registered_at,
+    updated_at: row.updated_at,
+  };
+}
+
+/**
+ * createAgentStore — build the right AgentStore for the current environment.
+ * Pick order (first non-null wins): PostgreSQL → Redis → in-memory.
+ * PostgreSQL takes precedence so production deployments get durable,
+ * relational storage; Redis is the legacy path; in-memory is the test
+ * harness.
+ */
+export function createAgentStore(
+  env: { DATABASE_URL?: string; REDIS_URL?: string } = process.env,
+  db: PgPool | null = null,
+): AgentStore {
+  if (env.DATABASE_URL && db) return new AgentStore(new PostgresAgentAdapter(db));
   if (env.REDIS_URL) {
     const require = createRequire(import.meta.url);
-    // ioredis is loaded lazily (via createRequire) so a bot that never sets
-    // REDIS_URL doesn't pull it in.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const ioredis: any = require("ioredis");
     const Redis = ioredis.default ?? ioredis.Redis ?? ioredis;

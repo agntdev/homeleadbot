@@ -1,0 +1,18 @@
+[
+  {
+    "name": "E5T2: CRUD layer wiring is intact — the bot still answers /start with the new stores present",
+    "steps": [
+      {
+        "send": { "text": "/start", "userId": 7001 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Welcome to HomeLeadBot, Test! \ud83c\udfe0\n\nYou're registered as an agent. I help you post listings, capture buyer leads, and deliver hot-lead notifications. Pick an option below to get started."
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

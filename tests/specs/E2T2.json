@@ -93,7 +93,7 @@
           {
             "method": "sendMessage",
             "payload": {
-              "text": "Thanks for your interest in \u201cSunny 1BR\u201d! Send me the location you're looking for as your next message and I'll walk you through the rest of the intake."
+              "text": "Thanks for your interest in \u201cSunny 1BR\u201d! Send me the location you're looking for as your next message and I'll walk you through the rest of the intake.\n\n(Tip: type /cancel at any point to abandon the intake.)"
             }
           }
         ]

@@ -1,0 +1,391 @@
+[
+  {
+    "name": "Tapping 'I'm interested' starts the buyer intake: location -> budget -> bedrooms -> timeline -> pre-approval -> lead created",
+    "steps": [
+      {
+        "send": {
+          "update": {
+            "update_id": 9001,
+            "my_chat_member": {
+              "chat": { "id": -100900300001, "type": "supergroup", "title": "Bernal Buyers" },
+              "from": { "id": 14001, "is_bot": false, "first_name": "Alice" },
+              "date": 0,
+              "old_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "left" },
+              "new_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "member" }
+            }
+          }
+        },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": {
+          "callback": "claim_group:-100900300001",
+          "userId": 14001,
+          "chatId": -100900300001,
+          "messageId": 1
+        },
+        "expect": [{ "method": "answerCallbackQuery" }, { "method": "editMessageText" }]
+      },
+      {
+        "send": { "text": "/create_listing", "userId": 14001, "chatId": 14001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "2BR in Bernal", "userId": 14001, "chatId": 14001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "Quiet street, south-facing.", "userId": 14001, "chatId": 14001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "900000", "userId": 14001, "chatId": 14001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "2", "userId": 14001, "chatId": 14001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "Bernal Heights, SF", "userId": 14001, "chatId": 14001 },
+        "expect": [
+          { "method": "sendMessage" },
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": {
+          "callback": "groups:create_listing:group:-100900300001",
+          "userId": 14001,
+          "chatId": 14001,
+          "messageId": 2
+        },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": {
+          "callback": "groups:create_listing:done",
+          "userId": 14001,
+          "chatId": 14001,
+          "messageId": 3
+        },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "sendMessage" },
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": {
+          "callback": "interested:1",
+          "userId": 15001,
+          "chatId": 15001,
+          "messageId": 4
+        },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Thanks for your interest in \u201c2BR in Bernal\u201d! Send me the location you're looking for as your next message and I'll walk you through the rest of the intake.\n\n(Tip: type /cancel at any point to abandon the intake.)"
+            }
+          }
+        ]
+      },
+      {
+        "send": { "text": "Mission, SF", "userId": 15001, "chatId": 15001 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Location set to \u201cMission, SF\u201d. Now send the budget in cents (e.g. `800000` for $8000), or type `skip` to leave it blank."
+            }
+          }
+        ]
+      },
+      {
+        "send": { "text": "800000", "userId": 15001, "chatId": 15001 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Budget set to 800000 cents. Now send the number of bedrooms, or type `skip`."
+            }
+          }
+        ]
+      },
+      {
+        "send": { "text": "2", "userId": 15001, "chatId": 15001 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Bedrooms set to 2. Now send the timeline (`30d`, `1-3m`, `3-6m`, `6m+`, or `skip`)."
+            }
+          }
+        ]
+      },
+      {
+        "send": { "text": "30d", "userId": 15001, "chatId": 15001 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Timeline set to 30d. Last one: pre-approval status (`yes`, `no`, `looking`, or `skip`)."
+            }
+          }
+        ]
+      },
+      {
+        "send": { "text": "yes", "userId": 15001, "chatId": 15001 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Thanks! Your lead has been recorded (lead #1). The agent will reach out soon."
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "All optional fields can be skipped; the lead is still recorded",
+    "steps": [
+      {
+        "send": {
+          "update": {
+            "update_id": 9002,
+            "my_chat_member": {
+              "chat": { "id": -100900300002, "type": "group", "title": "Castro Buyers" },
+              "from": { "id": 14002, "is_bot": false, "first_name": "Bob" },
+              "date": 0,
+              "old_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "left" },
+              "new_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "member" }
+            }
+          }
+        },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": {
+          "callback": "claim_group:-100900300002",
+          "userId": 14002,
+          "chatId": -100900300002,
+          "messageId": 1
+        },
+        "expect": [{ "method": "answerCallbackQuery" }, { "method": "editMessageText" }]
+      },
+      {
+        "send": { "text": "/create_listing", "userId": 14002, "chatId": 14002 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "Studio", "userId": 14002, "chatId": 14002 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "Just a studio.", "userId": 14002, "chatId": 14002 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "skip", "userId": 14002, "chatId": 14002 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "skip", "userId": 14002, "chatId": 14002 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "skip", "userId": 14002, "chatId": 14002 },
+        "expect": [
+          { "method": "sendMessage" },
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": {
+          "callback": "groups:create_listing:group:-100900300002",
+          "userId": 14002,
+          "chatId": 14002,
+          "messageId": 2
+        },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": {
+          "callback": "groups:create_listing:done",
+          "userId": 14002,
+          "chatId": 14002,
+          "messageId": 3
+        },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "sendMessage" },
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": {
+          "callback": "interested:1",
+          "userId": 15002,
+          "chatId": 15002,
+          "messageId": 4
+        },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": { "text": "Anywhere in SF", "userId": 15002, "chatId": 15002 },
+        "expect": [
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": { "text": "skip", "userId": 15002, "chatId": 15002 },
+        "expect": [
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": { "text": "skip", "userId": 15002, "chatId": 15002 },
+        "expect": [
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": { "text": "skip", "userId": 15002, "chatId": 15002 },
+        "expect": [
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": { "text": "skip", "userId": 15002, "chatId": 15002 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Thanks! Your lead has been recorded (lead #1). The agent will reach out soon."
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "/cancel abandons an in-flight buyer intake",
+    "steps": [
+      {
+        "send": {
+          "update": {
+            "update_id": 9003,
+            "my_chat_member": {
+              "chat": { "id": -100900300003, "type": "supergroup", "title": "Inner Sunset Buyers" },
+              "from": { "id": 14003, "is_bot": false, "first_name": "Carol" },
+              "date": 0,
+              "old_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "left" },
+              "new_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "member" }
+            }
+          }
+        },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": {
+          "callback": "claim_group:-100900300003",
+          "userId": 14003,
+          "chatId": -100900300003,
+          "messageId": 1
+        },
+        "expect": [{ "method": "answerCallbackQuery" }, { "method": "editMessageText" }]
+      },
+      {
+        "send": { "text": "/create_listing", "userId": 14003, "chatId": 14003 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "Skip", "userId": 14003, "chatId": 14003 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "Skip", "userId": 14003, "chatId": 14003 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "1", "userId": 14003, "chatId": 14003 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "1", "userId": 14003, "chatId": 14003 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "Inner Sunset", "userId": 14003, "chatId": 14003 },
+        "expect": [
+          { "method": "sendMessage" },
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": {
+          "callback": "groups:create_listing:group:-100900300003",
+          "userId": 14003,
+          "chatId": 14003,
+          "messageId": 2
+        },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": {
+          "callback": "groups:create_listing:done",
+          "userId": 14003,
+          "chatId": 14003,
+          "messageId": 3
+        },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "sendMessage" },
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": {
+          "callback": "interested:1",
+          "userId": 15003,
+          "chatId": 15003,
+          "messageId": 4
+        },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": { "text": "Mission", "userId": 15003, "chatId": 15003 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "/cancel", "userId": 15003, "chatId": 15003 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Intake cancelled."
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

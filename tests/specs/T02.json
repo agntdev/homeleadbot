@@ -1,0 +1,74 @@
+[
+  {
+    "name": "/start replies with the HomeLeadBot welcome and main menu",
+    "steps": [
+      {
+        "send": { "text": "/start" },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Welcome to HomeLeadBot, Test! 🏠\n\nI help real estate agents post listings, capture buyer leads, and deliver hot-lead notifications. Pick an option below to get started.",
+              "reply_markup": {
+                "inline_keyboard": [
+                  [
+                    { "text": "📝 Create listing", "callback_data": "menu:create_listing" },
+                    { "text": "🏠 Find a home",   "callback_data": "menu:find_home" }
+                  ],
+                  [
+                    { "text": "👥 My groups",     "callback_data": "menu:groups" },
+                    { "text": "❓ Help",          "callback_data": "menu:help" }
+                  ]
+                ]
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "Tapping a main-menu button stops the spinner with an acknowledgement",
+    "steps": [
+      {
+        "send": { "callback": "menu:create_listing" },
+        "expect": [
+          { "method": "answerCallbackQuery" }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "Tapping the Find a home menu button stops the spinner",
+    "steps": [
+      {
+        "send": { "callback": "menu:find_home" },
+        "expect": [
+          { "method": "answerCallbackQuery" }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "Tapping the My groups menu button stops the spinner",
+    "steps": [
+      {
+        "send": { "callback": "menu:groups" },
+        "expect": [
+          { "method": "answerCallbackQuery" }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "Tapping the Help menu button stops the spinner",
+    "steps": [
+      {
+        "send": { "callback": "menu:help" },
+        "expect": [
+          { "method": "answerCallbackQuery" }
+        ]
+      }
+    ]
+  }
+]

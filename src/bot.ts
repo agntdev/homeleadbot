@@ -4,6 +4,7 @@ import {
   inlineButton,
   inlineKeyboard,
 } from "./toolkit/index.js";
+import { createAgentStore, type AgentStore } from "./storage/agents.js";
 
 // The per-chat session shape (ephemeral conversation state only). Extend as the
 // bot grows. Durable domain data must NOT live here — use the toolkit's
@@ -60,6 +61,17 @@ const ERROR_BOUNDARY_REPLY =
  * and flows here.
  */
 export function buildBot(token: string) {
+  const agentStore = createAgentStore();
+  return buildBotWithStore(token, agentStore);
+}
+
+/**
+ * buildBotWithStore — same as buildBot, but takes an explicit AgentStore.
+ * Used by the test harness (and any future integration tests) to inject a
+ * deterministic store. Production code goes through buildBot() which calls
+ * createAgentStore() and reads REDIS_URL.
+ */
+export function buildBotWithStore(token: string, agentStore: AgentStore) {
   const bot = createBot<Session>(token, {
     initial: () => ({}),
   });
@@ -87,11 +99,12 @@ export function buildBot(token: string) {
     }
   });
 
-  // /start — HomeLeadBot welcome + the bot's main menu (T02). T02 owns the
-  // menu structure; later feature tasks (E1T1, E2T1, E3T1, etc.) deepen the
-  // individual menu routes with real flows.
+  // /start — HomeLeadBot welcome + the bot's main menu (T02). E1T1 layers
+  // the agent-registration side effect on top: every /start upserts an
+  // AgentRecord (Telegram ID + display name + username + timestamps) in the
+  // durable AgentStore, and the welcome copy adapts to whether the agent
+  // is brand-new or returning.
   bot.command("start", async (ctx: BotContext<Session>) => {
-    const name = ctx.from?.first_name ?? "there";
     const keyboard = inlineKeyboard([
       [
         inlineButton(MAIN_MENU_BUTTONS[0].text, MAIN_MENU_BUTTONS[0].data),
@@ -102,12 +115,29 @@ export function buildBot(token: string) {
         inlineButton(MAIN_MENU_BUTTONS[3].text, MAIN_MENU_BUTTONS[3].data),
       ],
     ]);
-    await ctx.reply(
-      `Welcome to HomeLeadBot, ${name}! 🏠\n\n` +
+
+    let greeting: string;
+    if (ctx.from) {
+      const { record, isNew } = await agentStore.registerFromTelegramUser(ctx.from);
+      greeting = isNew
+        ? `Welcome to HomeLeadBot, ${record.display_name}! 🏠\n\n` +
+          `You're registered as an agent. I help you post listings, capture ` +
+          `buyer leads, and deliver hot-lead notifications. Pick an option ` +
+          `below to get started.`
+        : `Welcome back, ${record.display_name}! 🏠\n\n` +
+          `I help you post listings, capture buyer leads, and deliver ` +
+          `hot-lead notifications. Pick an option below to get started.`;
+    } else {
+      // No `from` (e.g. a channel post the bot received anonymously). Still
+      // show the menu so the dialog test has something to assert — but skip
+      // the registration (we don't have a Telegram ID to store).
+      greeting =
+        `Welcome to HomeLeadBot! 🏠\n\n` +
         `I help real estate agents post listings, capture buyer leads, and ` +
-        `deliver hot-lead notifications. Pick an option below to get started.`,
-      { reply_markup: keyboard },
-    );
+        `deliver hot-lead notifications. Pick an option below to get started.`;
+    }
+
+    await ctx.reply(greeting, { reply_markup: keyboard });
   });
 
   // /help — list the bot's commands (T03).

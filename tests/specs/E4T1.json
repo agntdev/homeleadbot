@@ -1,0 +1,144 @@
+[
+  {
+    "name": "A-tier lead: the originating group receives a hot-lead message AND the agent is DM'd with action buttons",
+    "steps": [
+      {
+        "send": {
+          "update": {
+            "update_id": 11001,
+            "my_chat_member": {
+              "chat": { "id": -100900500001, "type": "supergroup", "title": "Hot Lead Buyers" },
+              "from": { "id": 18001, "is_bot": false, "first_name": "Alice" },
+              "date": 0,
+              "old_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "left" },
+              "new_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "member" }
+            }
+          }
+        },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": {
+          "callback": "claim_group:-100900500001",
+          "userId": 18001,
+          "chatId": -100900500001,
+          "messageId": 1
+        },
+        "expect": [{ "method": "answerCallbackQuery" }, { "method": "editMessageText" }]
+      },
+      {
+        "send": { "text": "/create_listing", "userId": 18001, "chatId": 18001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "3BR in NOPA", "userId": 18001, "chatId": 18001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "Spacious, bright, recently renovated.", "userId": 18001, "chatId": 18001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "1500000", "userId": 18001, "chatId": 18001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "3", "userId": 18001, "chatId": 18001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "NOPA, SF", "userId": 18001, "chatId": 18001 },
+        "expect": [
+          { "method": "sendMessage" },
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": {
+          "callback": "groups:create_listing:group:-100900500001",
+          "userId": 18001,
+          "chatId": 18001,
+          "messageId": 2
+        },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": {
+          "callback": "groups:create_listing:done",
+          "userId": 18001,
+          "chatId": 18001,
+          "messageId": 3
+        },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "sendMessage" },
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": {
+          "callback": "interested:1",
+          "userId": 19001,
+          "chatId": 19001,
+          "messageId": 4
+        },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": { "text": "NOPA, SF", "userId": 19001, "chatId": 19001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "1500000", "userId": 19001, "chatId": 19001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "3", "userId": 19001, "chatId": 19001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "30d", "userId": 19001, "chatId": 19001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "yes", "userId": 19001, "chatId": 19001 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Thanks! Your lead has been recorded (lead #1, tier A \u2014 hot). The agent will reach out soon."
+            }
+          },
+          {
+            "method": "sendMessage",
+            "payload": {
+              "chat_id": -100900500001,
+              "text": "🔥 Hot lead #1\nListing: 3BR in NOPA (id 1)\nBuyer: Test (telegram id 19001)\n\n• Location: NOPA, SF\n• Budget (cents): 1500000\n• Bedrooms: 3\n• Timeline: 30d\n• Pre-approval: yes"
+            }
+          },
+          {
+            "method": "sendMessage",
+            "payload": {
+              "chat_id": 18001,
+              "text": "🔥 Hot lead #1\nListing: 3BR in NOPA (id 1)\nBuyer: Test (telegram id 19001)\n\n• Location: NOPA, SF\n• Budget (cents): 1500000\n• Bedrooms: 3\n• Timeline: 30d\n• Pre-approval: yes",
+              "reply_markup": {
+                "inline_keyboard": [
+                  [
+                    { "text": "📞 Contact buyer", "callback_data": "lead:1:contact" },
+                    { "text": "✓ Mark contacted", "callback_data": "lead:1:contacted" }
+                  ]
+                ]
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

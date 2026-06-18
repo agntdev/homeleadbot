@@ -1,4 +1,4 @@
-import { createBot } from "./toolkit/index.js";
+import { createBot, type BotContext } from "./toolkit/index.js";
 
 // The per-chat session shape (ephemeral conversation state only). Extend as the
 // bot grows. Durable domain data must NOT live here — use the toolkit's
@@ -18,8 +18,15 @@ export function buildBot(token: string) {
     initial: () => ({}),
   });
 
-  bot.command("start", async (ctx) => {
-    await ctx.reply("Welcome! I am ready to help.");
+  // Project-specific entry behavior for HomeLeadBot (T01). T02 will replace
+  // this with a full main menu (inline keyboard routing to top-level features).
+  bot.command("start", async (ctx: BotContext<Session>) => {
+    const name = ctx.from?.first_name ?? "there";
+    await ctx.reply(
+      `Welcome to HomeLeadBot, ${name}! 🏠\n\n` +
+        `I help real estate agents post listings, capture buyer leads, and ` +
+        `deliver hot-lead notifications. Send /help any time to see what I can do.`,
+    );
   });
 
   return bot;

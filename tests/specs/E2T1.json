@@ -1,0 +1,306 @@
+[
+  {
+    "name": "/create_listing for an agent with no claimed groups returns a friendly nudge",
+    "steps": [
+      {
+        "send": { "text": "/create_listing", "userId": 9001 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "You haven't claimed any groups yet. Add the bot to a Telegram group, tap \u201cClaim this group\u201d, and come back \u2014 listings are only published to groups you've claimed."
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "Full /create_listing flow: title -> description -> price -> bedrooms -> location -> pick group -> done",
+    "steps": [
+      {
+        "send": {
+          "update": {
+            "update_id": 7001,
+            "my_chat_member": {
+              "chat": { "id": -100900100001, "type": "supergroup", "title": "SOMA Buyers" },
+              "from": { "id": 9001, "is_bot": false, "first_name": "Alice" },
+              "date": 0,
+              "old_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "left" },
+              "new_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "member" }
+            }
+          }
+        },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": {
+          "callback": "claim_group:-100900100001",
+          "userId": 9001,
+          "chatId": -100900100001,
+          "messageId": 1
+        },
+        "expect": [{ "method": "answerCallbackQuery" }, { "method": "editMessageText" }]
+      },
+      {
+        "send": { "text": "/create_listing", "userId": 9001, "chatId": 9001 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Let's create a listing. Send me the title as your next message.\n\n(Tip: type /cancel at any point to abandon the draft.)"
+            }
+          }
+        ]
+      },
+      {
+        "send": { "text": "2BR Mission Loft", "userId": 9001, "chatId": 9001 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Title set to \u201c2BR Mission Loft\u201d. Now send me a short description (1-2 sentences)."
+            }
+          }
+        ]
+      },
+      {
+        "send": { "text": "Sun-drenched loft in the heart of the Mission.", "userId": 9001, "chatId": 9001 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Got it. Now send the price in cents (e.g. `100000` for $1000), or type `skip` to leave it blank."
+            }
+          }
+        ]
+      },
+      {
+        "send": { "text": "850000", "userId": 9001, "chatId": 9001 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Price set to 850000 cents. Now send the number of bedrooms, or type `skip`."
+            }
+          }
+        ]
+      },
+      {
+        "send": { "text": "2", "userId": 9001, "chatId": 9001 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Bedrooms set to 2. Now send the location (city / ZIP / free text), or type `skip`."
+            }
+          }
+        ]
+      },
+      {
+        "send": { "text": "Mission, San Francisco", "userId": 9001, "chatId": 9001 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Location set to \u201cMission, San Francisco\u201d. Now pick the group(s) to post to:"
+            }
+          },
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Which group(s) should I post this listing to?\n\n\u2b1c 1. SOMA Buyers\n\nTap a row to toggle it. No groups selected means the listing is saved but not published.",
+              "reply_markup": {
+                "inline_keyboard": [
+                  [
+                    { "text": "SOMA Buyers", "callback_data": "groups:create_listing:group:-100900100001" }
+                  ],
+                  [
+                    { "text": "\u2705 Done", "callback_data": "groups:create_listing:done" }
+                  ]
+                ]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "send": {
+          "callback": "groups:create_listing:group:-100900100001",
+          "userId": 9001,
+          "chatId": 9001,
+          "messageId": 2
+        },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Which group(s) should I post this listing to?\n\n\u2705 1. SOMA Buyers\n\n1 group(s) selected. Tap another row to toggle, or tap Done to publish.",
+              "reply_markup": {
+                "inline_keyboard": [
+                  [
+                    { "text": "SOMA Buyers", "callback_data": "groups:create_listing:group:-100900100001" }
+                  ],
+                  [
+                    { "text": "\u2705 Done", "callback_data": "groups:create_listing:done" }
+                  ]
+                ]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "send": {
+          "callback": "groups:create_listing:done",
+          "userId": 9001,
+          "chatId": 9001,
+          "messageId": 3
+        },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Listing #1 created.\nReady to post to 1 group(s) (E2T2 will publish the messages)."
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "Optional fields (bedrooms, location) can be skipped with the literal 'skip' word",
+    "steps": [
+      {
+        "send": {
+          "update": {
+            "update_id": 7002,
+            "my_chat_member": {
+              "chat": { "id": -100900100002, "type": "group", "title": "Marina Buyers" },
+              "from": { "id": 9002, "is_bot": false, "first_name": "Bob" },
+              "date": 0,
+              "old_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "left" },
+              "new_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "member" }
+            }
+          }
+        },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": {
+          "callback": "claim_group:-100900100002",
+          "userId": 9002,
+          "chatId": -100900100002,
+          "messageId": 1
+        },
+        "expect": [{ "method": "answerCallbackQuery" }, { "method": "editMessageText" }]
+      },
+      {
+        "send": { "text": "/create_listing", "userId": 9002, "chatId": 9002 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "Open House Sunday", "userId": 9002, "chatId": 9002 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "Bring cookies.", "userId": 9002, "chatId": 9002 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "skip", "userId": 9002, "chatId": 9002 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "skip", "userId": 9002, "chatId": 9002 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "skip", "userId": 9002, "chatId": 9002 },
+        "expect": [
+          { "method": "sendMessage" },
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": {
+          "callback": "groups:create_listing:group:-100900100002",
+          "userId": 9002,
+          "chatId": 9002,
+          "messageId": 2
+        },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": {
+          "callback": "groups:create_listing:done",
+          "userId": 9002,
+          "chatId": 9002,
+          "messageId": 3
+        },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Listing #1 created.\nReady to post to 1 group(s) (E2T2 will publish the messages)."
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "/cancel abandons an in-flight /create_listing draft",
+    "steps": [
+      {
+        "send": {
+          "update": {
+            "update_id": 7003,
+            "my_chat_member": {
+              "chat": { "id": -100900100003, "type": "group", "title": "Sunset Buyers" },
+              "from": { "id": 9003, "is_bot": false, "first_name": "Carol" },
+              "date": 0,
+              "old_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "left" },
+              "new_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "member" }
+            }
+          }
+        },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": {
+          "callback": "claim_group:-100900100003",
+          "userId": 9003,
+          "chatId": -100900100003,
+          "messageId": 1
+        },
+        "expect": [{ "method": "answerCallbackQuery" }, { "method": "editMessageText" }]
+      },
+      {
+        "send": { "text": "/create_listing", "userId": 9003, "chatId": 9003 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "Half-formed listing", "userId": 9003, "chatId": 9003 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "/cancel", "userId": 9003, "chatId": 9003 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Listing draft cancelled."
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

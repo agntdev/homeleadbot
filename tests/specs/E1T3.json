@@ -1,0 +1,242 @@
+[
+  {
+    "name": "/groups for an agent with no claimed groups returns a friendly nudge pointing at the claim flow",
+    "steps": [
+      {
+        "send": { "text": "/groups", "userId": 8001 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "You haven't claimed any groups yet. Add the bot to a Telegram group and an admin can tap \u201cClaim this group\u201d to start receiving lead notifications."
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "Full flow: bot added to a group -> admin claims it -> /groups lists it with Rename + Detach buttons",
+    "steps": [
+      {
+        "send": {
+          "update": {
+            "update_id": 6001,
+            "my_chat_member": {
+              "chat": { "id": -100900000001, "type": "supergroup", "title": "SOMA Buyers" },
+              "from": { "id": 8001, "is_bot": false, "first_name": "Alice" },
+              "date": 0,
+              "old_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "left" },
+              "new_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "member" }
+            }
+          }
+        },
+        "expect": [
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": {
+          "callback": "claim_group:-100900000001",
+          "userId": 8001,
+          "chatId": -100900000001,
+          "messageId": 1
+        },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "editMessageText" }
+        ]
+      },
+      {
+        "send": { "text": "/groups", "userId": 8001 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Your claimed groups (1):\n1. SOMA Buyers (id `-100900000001`)\n\nTap Rename to set a new name (send the new title as your next message), or Detach to stop receiving leads for that group.",
+              "reply_markup": {
+                "inline_keyboard": [
+                  [
+                    { "text": "\u270f\ufe0f Rename", "callback_data": "groups:rename:-100900000001" },
+                    { "text": "\ud83d\uddd1 Detach", "callback_data": "groups:detach:-100900000001" }
+                  ]
+                ]
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "Tapping Detach removes the claim and edits the message to 'no longer claimed'",
+    "steps": [
+      {
+        "send": {
+          "update": {
+            "update_id": 6002,
+            "my_chat_member": {
+              "chat": { "id": -100900000002, "type": "group", "title": "Mission Listings" },
+              "from": { "id": 8002, "is_bot": false, "first_name": "Bob" },
+              "date": 0,
+              "old_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "left" },
+              "new_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "member" }
+            }
+          }
+        },
+        "expect": [
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": {
+          "callback": "claim_group:-100900000002",
+          "userId": 8002,
+          "chatId": -100900000002,
+          "messageId": 1
+        },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "editMessageText" }
+        ]
+      },
+      {
+        "send": { "callback": "groups:detach:-100900000002", "userId": 8002, "chatId": 8002, "messageId": 2 },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          {
+            "method": "editMessageText",
+            "payload": {
+              "text": "This group is no longer claimed. Lead notifications will stop."
+            }
+          }
+        ]
+      },
+      {
+        "send": { "text": "/groups", "userId": 8002 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "You haven't claimed any groups yet. Add the bot to a Telegram group and an admin can tap \u201cClaim this group\u201d to start receiving lead notifications."
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "Rename flow: tap Rename -> send a new title -> the group's title is updated",
+    "steps": [
+      {
+        "send": {
+          "update": {
+            "update_id": 6003,
+            "my_chat_member": {
+              "chat": { "id": -100900000003, "type": "supergroup", "title": "Old Name" },
+              "from": { "id": 8003, "is_bot": false, "first_name": "Carol" },
+              "date": 0,
+              "old_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "left" },
+              "new_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "member" }
+            }
+          }
+        },
+        "expect": [
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": {
+          "callback": "claim_group:-100900000003",
+          "userId": 8003,
+          "chatId": -100900000003,
+          "messageId": 1
+        },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "editMessageText" }
+        ]
+      },
+      {
+        "send": { "callback": "groups:rename:-100900000003", "userId": 8003, "chatId": 8003, "messageId": 2 },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Sure \u2014 send me the new name for this group as your next message. (Title will be applied on the next text you send.)"
+            }
+          }
+        ]
+      },
+      {
+        "send": { "text": "Brand New Name", "userId": 8003, "chatId": 8003 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Renamed to \u201cBrand New Name\u201d."
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "Tapping the My groups menu button opens /groups inline (not just a toast)",
+    "steps": [
+      {
+        "send": {
+          "update": {
+            "update_id": 6004,
+            "my_chat_member": {
+              "chat": { "id": -100900000004, "type": "supergroup", "title": "Marina Buyers" },
+              "from": { "id": 8004, "is_bot": false, "first_name": "Dan" },
+              "date": 0,
+              "old_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "left" },
+              "new_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "member" }
+            }
+          }
+        },
+        "expect": [
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": {
+          "callback": "claim_group:-100900000004",
+          "userId": 8004,
+          "chatId": -100900000004,
+          "messageId": 1
+        },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "editMessageText" }
+        ]
+      },
+      {
+        "send": { "callback": "menu:groups", "userId": 8004, "chatId": 8004, "messageId": 2 },
+        "expect": [
+          {
+            "method": "answerCallbackQuery",
+            "payload": { "text": "Loading your groups..." }
+          },
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Your claimed groups (1):\n1. Marina Buyers (id `-100900000004`)\n\nTap Rename to set a new name (send the new title as your next message), or Detach to stop receiving leads for that group.",
+              "reply_markup": {
+                "inline_keyboard": [
+                  [
+                    { "text": "\u270f\ufe0f Rename", "callback_data": "groups:rename:-100900000004" },
+                    { "text": "\ud83d\uddd1 Detach", "callback_data": "groups:detach:-100900000004" }
+                  ]
+                ]
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

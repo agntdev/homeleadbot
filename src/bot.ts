@@ -13,7 +13,9 @@ import { runMigration } from "./storage/migrate.js";
 // bot grows. Durable domain data must NOT live here — use the toolkit's
 // persistent storage (see AGENTS.md).
 export interface Session {
-  // example: step?: "awaiting_amount";
+  /** E1T3: group_id the agent is currently renaming (next text message
+   *  is treated as the new title). Cleared once the rename completes. */
+  renaming_group_id?: number;
 }
 
 /** Callback prefix for main-menu buttons. Routed in the callback handler below. */
@@ -26,11 +28,22 @@ const MAIN_MENU_BUTTONS: ReadonlyArray<{ text: string; data: string; note: strin
   { text: "❓ Help",          data: `${MENU_PREFIX}help`,           note: "List the bot's commands (T03)." },
 ];
 
-/** Commands the bot currently recognises (T03). Kept in sync with `bot.command`
- *  registrations below so the unknown-command middleware doesn't shadow them. */
+/**
+ * The My groups menu button is special: tapping it should OPEN the /groups
+ * management list (not just a one-line toast). The callback handler in
+ * buildBot() routes `menu:groups` to renderGroupsList() and answers the
+ * callback with a short "Loading..." toast so the spinner stops while the
+ * list is being fetched.
+ */
+const GROUPS_MENU_DATA = `${MENU_PREFIX}groups`;
+
+/** Commands the bot currently recognises (T03, E1T3). Kept in sync with
+ *  `bot.command` registrations below so the unknown-command middleware
+ *  doesn't shadow them. */
 const KNOWN_COMMANDS: ReadonlySet<string> = new Set([
   "start",
   "help",
+  "groups",
   "bang",
 ]);
 
@@ -44,6 +57,13 @@ const BOT_IN_CHAT_STATUSES: ReadonlySet<string> = new Set([
 
 /** Callback prefix for the inline "Claim this group" button (E1T2). */
 const CLAIM_GROUP_PREFIX = "claim_group:";
+
+/** Callback prefix for the /groups management buttons (E1T3).
+ *  `groups:detach:<id>` — detaches the claim; `groups:rename:<id>` —
+ *  prompts the agent to send the new title as their next message. */
+const GROUPS_PREFIX = "groups:";
+const GROUPS_DETACH = "detach:";
+const GROUPS_RENAME = "rename:";
 
 /** Text shown in the group chat when the bot is added, prompting an admin
  *  to claim it for lead notifications. */
@@ -75,6 +95,47 @@ function unknownCommandReply(cmd: string): string {
  *  instead of the bot silently dying on a network blip or bad input. */
 const ERROR_BOUNDARY_REPLY =
   "Sorry, something went wrong on my side. Please try again in a moment.";
+
+/**
+ * renderGroupsList — shared renderer for the /groups command and the
+ * main-menu My groups button (E1T3). Reads the agent's claimed groups and
+ * emits a message with one inline-keyboard row per group: [Rename] [Detach].
+ * The empty state (no claimed groups) gets a friendly nudge pointing at
+ * the E1T2 claim flow. Pulled out of buildBotWithStores so the test
+ * harness can exercise it without spinning a Bot instance.
+ */
+export async function renderGroupsList(
+  ctx: BotContext<Session>,
+  agentStore: AgentStore,
+  groupStore: GroupStore,
+): Promise<void> {
+  const agentId = ctx.from?.id;
+  if (agentId === undefined) {
+    await ctx.reply("Could not identify you — try /groups from a Telegram account.");
+    return;
+  }
+  // Touch the agent store so the agent is at least registered before we
+  // list their groups. Cheap: get() is a single read; if it fails we still
+  // proceed (the storage may have been wiped, but listing should still
+  // work).
+  await agentStore.get(agentId);
+  const groups = await groupStore.listByAgent(agentId);
+  if (groups.length === 0) {
+    await ctx.reply(
+      "You haven't claimed any groups yet. Add the bot to a Telegram group and an admin can tap “Claim this group” to start receiving lead notifications.",
+    );
+    return;
+  }
+  const rows = groups.map((g) => [
+    { text: "✏️ Rename", callback_data: `${GROUPS_PREFIX}${GROUPS_RENAME}${g.group_id}` },
+    { text: "🗑 Detach", callback_data: `${GROUPS_PREFIX}${GROUPS_DETACH}${g.group_id}` },
+  ]);
+  const header =
+    `Your claimed groups (${groups.length}):\n` +
+    groups.map((g, i) => `${i + 1}. ${g.group_title ?? `Group ${g.group_id}`} (id \`${g.group_id}\`)`).join("\n") +
+    `\n\nTap Rename to set a new name (send the new title as your next message), or Detach to stop receiving leads for that group.`;
+  await ctx.reply(header, { reply_markup: { inline_keyboard: rows } });
+}
 
 /**
  * buildBot — assembles the bot and registers every handler, but does NOT start
@@ -199,6 +260,13 @@ export function buildBotWithStores(
     await ctx.reply(helpText());
   });
 
+  // /groups — E1T3 management command. Renders the agent's claimed groups
+  // with per-group Detach / Rename buttons. Empty state ("no groups yet")
+  // gets a friendly nudge pointing at the claim flow (E1T2).
+  bot.command("groups", async (ctx: BotContext<Session>) => {
+    await renderGroupsList(ctx, agentStore, groupStore);
+  });
+
   // /bang — debug hook: intentionally throws so operators (and the test
   // harness) can verify the error boundary is alive. The boundary's graceful
   // reply is the contract — without /bang, a real bug would also be caught
@@ -207,14 +275,39 @@ export function buildBotWithStores(
     throw new Error("intentional /bang error (used to verify the error boundary)");
   });
 
-  // Unknown-command fallback (T03). Intercepts every inbound message BEFORE
-  // the command router: if the message starts with a /command that isn't in
-  // KNOWN_COMMANDS, reply with a friendly nudge and stop the chain so the
-  // command router never sees it. Passes through to next() otherwise, so
-  // known commands (and non-command text) reach their normal handlers.
+  // Unknown-command fallback (T03) + rename-text pickup (E1T3). Order
+  // matters: a non-command text message first checks for a pending rename
+  // (session.renaming_group_id set by the groups:rename callback); if no
+  // rename is pending we fall through to the normal handler chain. For
+  // messages that DO start with "/", we route known vs unknown commands
+  // the same way T03 does.
   bot.on("message", async (ctx: BotContext<Session>, next) => {
     const msg = ctx.message;
-    if (!msg || !msg.text || !msg.text.startsWith("/")) return next();
+    if (!msg || !msg.text) return next();
+
+    // E1T3: rename pickup. Only consume the message if it's a plain text
+    // reply (not a /command) and the session has a pending rename.
+    if (
+      ctx.session.renaming_group_id !== undefined &&
+      !msg.text.startsWith("/")
+    ) {
+      const groupId = ctx.session.renaming_group_id;
+      ctx.session.renaming_group_id = undefined;
+      const newTitle = msg.text.trim();
+      if (newTitle.length === 0) {
+        await ctx.reply("Empty title — rename cancelled.");
+        return;
+      }
+      const updated = await groupStore.updateTitle(groupId, newTitle);
+      if (updated) {
+        await ctx.reply(`Renamed to “${newTitle}”.`);
+      } else {
+        await ctx.reply("That group is no longer claimed — nothing to rename.");
+      }
+      return;
+    }
+
+    if (!msg.text.startsWith("/")) return next();
     const entity = msg.entities?.find((e) => e.type === "bot_command");
     if (!entity) return next();
     const raw = msg.text.substring(entity.offset + 1, entity.offset + entity.length);
@@ -237,6 +330,51 @@ export function buildBotWithStores(
     if (!cq) return; // not a callback_query update — nothing to route.
     const data = cq.data;
     if (!data) return; // callback query without data — nothing we can route.
+
+    if (data === GROUPS_MENU_DATA) {
+      // Open the /groups management list inline (E1T3). Spinner stops
+      // first so the user sees immediate feedback, then the list arrives
+      // as a fresh message in the same chat.
+      await ctx.answerCallbackQuery({ text: "Loading your groups..." });
+      await renderGroupsList(ctx, agentStore, groupStore);
+      return;
+    }
+
+    if (data.startsWith(GROUPS_PREFIX)) {
+      // /groups management actions: detach or rename a claimed group.
+      if (data.startsWith(GROUPS_DETACH, GROUPS_PREFIX.length)) {
+        const groupIdStr = data.slice(GROUPS_PREFIX.length + GROUPS_DETACH.length);
+        const groupId = Number.parseInt(groupIdStr, 10);
+        if (!Number.isFinite(groupId)) {
+          await ctx.answerCallbackQuery({ text: "Malformed detach request." });
+          return;
+        }
+        const removed = await groupStore.detach(groupId);
+        if (removed) {
+          await ctx.answerCallbackQuery({ text: "Group detached." });
+          try {
+            await ctx.editMessageText("This group is no longer claimed. Lead notifications will stop.");
+          } catch { /* message may be uneditable; the toast is enough */ }
+        } else {
+          await ctx.answerCallbackQuery({ text: "This group is no longer claimed." });
+        }
+        return;
+      }
+      if (data.startsWith(GROUPS_RENAME, GROUPS_PREFIX.length)) {
+        const groupIdStr = data.slice(GROUPS_PREFIX.length + GROUPS_RENAME.length);
+        const groupId = Number.parseInt(groupIdStr, 10);
+        if (!Number.isFinite(groupId) || !ctx.from) {
+          await ctx.answerCallbackQuery({ text: "Malformed rename request." });
+          return;
+        }
+        // Stash the pending rename in the session. The next non-command
+        // text message from this user is treated as the new title.
+        ctx.session.renaming_group_id = groupId;
+        await ctx.answerCallbackQuery({ text: "Send the new name as your next message." });
+        await ctx.reply(`Sure — send me the new name for this group as your next message. (Title will be applied on the next text you send.)`);
+        return;
+      }
+    }
 
     if (data.startsWith(CLAIM_GROUP_PREFIX)) {
       const claimedBy = ctx.from?.id;
@@ -287,6 +425,12 @@ export function buildBotWithStores(
   // an in-chat status (member/administrator/creator) in a group or
   // supergroup, AND only when the group hasn't already been claimed —
   // re-prompting on every status change would be noise.
+  //
+  // Before sending the prompt we register the group's title with the
+  // store (E1T3) so the claim callback can attach a real title to the
+  // new claim. The button's callback_data only carries the group_id
+  // (Telegram caps callback_data at 64 bytes, which isn't enough for a
+  // real title), so the store is the only place to stash it.
   bot.on("my_chat_member", async (ctx: BotContext<Session>) => {
     const mcm = ctx.myChatMember;
     if (!mcm) return;
@@ -294,6 +438,7 @@ export function buildBotWithStores(
     if (chat.type !== "group" && chat.type !== "supergroup") return;
     if (!BOT_IN_CHAT_STATUSES.has(mcm.new_chat_member.status)) return;
     if (await groupStore.has(chat.id)) return; // already claimed — stay quiet.
+    await groupStore.registerGroup({ id: chat.id, type: chat.type, ...(chat.title ? { title: chat.title } : {}) });
     await ctx.api.sendMessage(chat.id, CLAIM_PROMPT_TEXT, {
       reply_markup: {
         inline_keyboard: [[

@@ -8,6 +8,7 @@ import {
 import { createAgentStore, type AgentStore } from "./storage/agents.js";
 import { createGroupStore, type GroupStore } from "./storage/groups.js";
 import { createListingStore, type ListingStore } from "./storage/listings.js";
+import { createLeadStore, type LeadStore } from "./storage/leads.js";
 import { createDb, type PgPool } from "./storage/db.js";
 import { runMigration } from "./storage/migrate.js";
 
@@ -34,6 +35,24 @@ export interface Session {
     };
     /** group_ids the agent has already selected (multi-select). */
     selected_group_ids?: number[];
+  };
+
+  /** E3T1: in-flight buyer intake conversation. Started by the
+   *  "I'm interested" callback (or by a direct message in the future);
+   *  the next non-command text message in the chat advances the step.
+   *  Cleared on completion, cancel, or session reset. */
+  buyer_intake?: {
+    step: "location" | "budget" | "bedrooms" | "timeline" | "pre_approval" | "done";
+    data: {
+      location?: string;
+      budget_cents?: number;
+      bedrooms?: number;
+      timeline?: string;
+      pre_approval?: string;
+    };
+    /** listing_id this intake is about (set when the buyer tapped
+     *  "I'm interested" on a specific listing). */
+    listing_id?: number;
   };
 }
 
@@ -297,6 +316,7 @@ export function buildBot(
     createAgentStore(process.env, db),
     createGroupStore(process.env, db),
     createListingStore(process.env, db),
+    createLeadStore(process.env, db),
   );
 }
 
@@ -326,6 +346,7 @@ export function buildBotWithStores(
   agentStore: AgentStore,
   groupStore: GroupStore,
   listingStore: ListingStore,
+  leadStore: LeadStore,
 ) {
   const bot = createBot<Session>(token, {
     initial: () => ({}),
@@ -437,9 +458,9 @@ export function buildBotWithStores(
     );
   });
 
-  // /cancel — abandons an in-flight /create_listing or rename session.
-  // Without this, an abandoned /create_listing would leave the session
-  // stuck on the next text message the agent sends.
+  // /cancel — abandons an in-flight /create_listing, /groups rename,
+  // or buyer-intake session. Without this, an abandoned session would
+  // keep consuming the next text message the user sends.
   bot.command("cancel", async (ctx: BotContext<Session>) => {
     if (ctx.session.creating_listing) {
       ctx.session.creating_listing = undefined;
@@ -449,6 +470,11 @@ export function buildBotWithStores(
     if (ctx.session.renaming_group_id !== undefined) {
       ctx.session.renaming_group_id = undefined;
       await ctx.reply("Rename cancelled.");
+      return;
+    }
+    if (ctx.session.buyer_intake) {
+      ctx.session.buyer_intake = undefined;
+      await ctx.reply("Intake cancelled.");
       return;
     }
     await ctx.reply("Nothing to cancel.");
@@ -592,6 +618,147 @@ export function buildBotWithStores(
         await ctx.reply("That group is no longer claimed — nothing to rename.");
       }
       return;
+    }
+
+    // E3T1: buyer intake text pickup. Same priority as rename/create
+    // (text pickup runs before the /command short-circuit so the next
+    // non-command message advances the step).
+    if (
+      ctx.session.buyer_intake !== undefined &&
+      !msg.text.startsWith("/")
+    ) {
+      const intake = ctx.session.buyer_intake;
+      const buyerId = ctx.from?.id;
+      if (buyerId === undefined) {
+        await ctx.reply("Could not identify you — intake cancelled.");
+        ctx.session.buyer_intake = undefined;
+        return;
+      }
+      const text = msg.text.trim();
+      switch (intake.step) {
+        case "location": {
+          if (text.length === 0) {
+            await ctx.reply("Empty location — send a non-empty location, or /cancel to abandon.");
+            return;
+          }
+          intake.data.location = text;
+          intake.step = "budget";
+          await ctx.reply(`Location set to “${text}”. Now send the budget in cents (e.g. \`800000\` for $8000), or type \`skip\` to leave it blank.`);
+          return;
+        }
+        case "budget": {
+          if (text === "skip") {
+            intake.step = "bedrooms";
+            await ctx.reply("Budget skipped. Now send the number of bedrooms you're looking for, or type `skip`.");
+            return;
+          }
+          const n = Number.parseInt(text.replace(/[,\s_]/g, ""), 10);
+          if (!Number.isFinite(n) || n < 0) {
+            await ctx.reply("That doesn't look like a budget. Send a non-negative integer (cents), or `skip`.");
+            return;
+          }
+          intake.data.budget_cents = n;
+          intake.step = "bedrooms";
+          await ctx.reply(`Budget set to ${n} cents. Now send the number of bedrooms, or type \`skip\`.`);
+          return;
+        }
+        case "bedrooms": {
+          if (text === "skip") {
+            intake.step = "timeline";
+            await ctx.reply("Bedrooms skipped. Now send the timeline (`30d`, `1-3m`, `3-6m`, `6m+`, or `skip`).");
+            return;
+          }
+          const n = Number.parseInt(text, 10);
+          if (!Number.isFinite(n) || n < 0) {
+            await ctx.reply("That doesn't look like a bedroom count. Send a non-negative integer, or `skip`.");
+            return;
+          }
+          intake.data.bedrooms = n;
+          intake.step = "timeline";
+          await ctx.reply(`Bedrooms set to ${n}. Now send the timeline (\`30d\`, \`1-3m\`, \`3-6m\`, \`6m+\`, or \`skip\`).`);
+          return;
+        }
+        case "timeline": {
+          const allowed = new Set(["30d", "1-3m", "3-6m", "6m+"]);
+          if (text === "skip") {
+            intake.step = "pre_approval";
+            await ctx.reply("Timeline skipped. Last one: pre-approval status (\`yes`, `no`, `looking`, or `skip`).");
+            return;
+          }
+          if (!allowed.has(text)) {
+            await ctx.reply("That doesn't look like a timeline. Send `30d`, `1-3m`, `3-6m`, `6m+`, or `skip`.");
+            return;
+          }
+          intake.data.timeline = text;
+          intake.step = "pre_approval";
+          await ctx.reply(`Timeline set to ${text}. Last one: pre-approval status (\`yes\`, \`no\`, \`looking\`, or \`skip\`).`);
+          return;
+        }
+        case "pre_approval": {
+          const allowed = new Set(["yes", "no", "looking"]);
+          if (text !== "skip" && !allowed.has(text)) {
+            await ctx.reply("That doesn't look like a pre-approval status. Send `yes`, `no`, `looking`, or `skip`.");
+            return;
+          }
+          if (text !== "skip") intake.data.pre_approval = text;
+          // All fields captured — create the Lead record. The
+          // session is cleared before any await so a partial
+          // write doesn't leave the session stuck.
+          const data = intake.data;
+          const listingId = intake.listing_id;
+          ctx.session.buyer_intake = undefined;
+          // Look up the listing to backfill listing_id + the
+          // originating group (if any) onto the lead. If the
+          // listing was deleted between the tap and the intake
+          // completion, the lead still gets recorded (just
+          // without a listing link).
+          let leadListingId: number | undefined;
+          let leadGroupId: number | undefined;
+          if (listingId !== undefined) {
+            const listing = await listingStore.get(listingId);
+            if (listing) {
+              leadListingId = listing.id;
+              // E2T2 stored the post via attachToGroup; we don't
+              // currently expose listForGroup here, so group_id
+              // is left for E4T1 to backfill from the
+              // group_listings join. Listing is enough to find
+              // the agent / posts later.
+            }
+          }
+          const lead = await leadStore.create({
+            listing_id: leadListingId,
+            group_id: leadGroupId,
+            buyer_telegram_id: buyerId,
+            buyer_username: ctx.from?.username,
+            buyer_display_name: ctx.from?.first_name,
+            status: "new",
+          });
+          // Persist the intake Q&A as lead_intake_items in the
+          // order the buyer answered them. Each row captures the
+          // question + the answer.
+          const intakeRows: Array<[string, string]> = [];
+          if (data.location !== undefined) intakeRows.push(["Location", data.location]);
+          if (data.budget_cents !== undefined) intakeRows.push(["Budget (cents)", String(data.budget_cents)]);
+          if (data.bedrooms !== undefined) intakeRows.push(["Bedrooms", String(data.bedrooms)]);
+          if (data.timeline !== undefined) intakeRows.push(["Timeline", data.timeline]);
+          if (data.pre_approval !== undefined) intakeRows.push(["Pre-approval", data.pre_approval]);
+          for (let i = 0; i < intakeRows.length; i++) {
+            const [q, a] = intakeRows[i]!;
+            await leadStore.addIntakeItem(lead.id, q, a, i);
+          }
+          await leadStore.addEvent(lead.id, "intake_completed", { skipped_count: 5 - intakeRows.length });
+          await ctx.reply(
+            `Thanks! Your lead has been recorded (lead #${lead.id}). The agent will reach out soon.`,
+          );
+          return;
+        }
+        case "done": {
+          // The intake is already finished; just clear the session
+          // and drop the message on the floor.
+          ctx.session.buyer_intake = undefined;
+          return;
+        }
+      }
     }
 
     if (!msg.text.startsWith("/")) return next();
@@ -767,31 +934,39 @@ export function buildBotWithStores(
     }
 
     if (data.startsWith(INTERESTED_CALLBACK_PREFIX)) {
-      // E2T2: a buyer tapped "I'm interested" on a posted listing.
-      // The full buyer-intake flow lives in E3T1; for E2T2 we just
-      // acknowledge the tap and stash the listing_id in the session so
-      // the next text message in this chat can be treated as the
-      // intake's first answer (location).
+      // E2T2 + E3T1: a buyer tapped "I'm interested" on a posted
+      // listing. Start the buyer-intake flow (location → budget →
+      // bedrooms → timeline → pre-approval) in the session. The next
+      // non-command text message in this chat will be treated as the
+      // first answer (location).
       const listingIdStr = data.slice(INTERESTED_CALLBACK_PREFIX.length);
       const listingId = Number.parseInt(listingIdStr, 10);
       if (!Number.isFinite(listingId)) {
         await ctx.answerCallbackQuery({ text: "Malformed request." });
         return;
       }
-      // E2T2: defer the actual intake-start to E3T1. For now we
-      // acknowledge the tap with a friendly toast and a single
-      // instruction message so the buyer knows the bot saw them.
-      await ctx.answerCallbackQuery({ text: "Got it — starting your intake..." });
-      // The full intake flow (location → budget → bedrooms → timeline
-      // → pre-approval → score) is implemented in E3T1. For E2T2 we
-      // just send a one-liner so the test can verify the button works.
       const listing = await listingStore.get(listingId);
       if (!listing) {
-        await ctx.reply("That listing is no longer available.");
+        await ctx.answerCallbackQuery({ text: "That listing is no longer available." });
         return;
       }
+      const buyerId = ctx.from?.id;
+      if (buyerId === undefined) {
+        await ctx.answerCallbackQuery({ text: "Could not identify you — start the intake from a Telegram account." });
+        return;
+      }
+      // If an intake is already in flight (e.g. the buyer tapped the
+      // button twice), keep the existing one — don't restart.
+      if (ctx.session.buyer_intake === undefined) {
+        ctx.session.buyer_intake = {
+          step: "location",
+          data: {},
+          listing_id: listingId,
+        };
+      }
+      await ctx.answerCallbackQuery({ text: "Got it — starting your intake..." });
       await ctx.reply(
-        `Thanks for your interest in “${listing.title}”! Send me the location you're looking for as your next message and I'll walk you through the rest of the intake.`,
+        `Thanks for your interest in “${listing.title}”! Send me the location you're looking for as your next message and I'll walk you through the rest of the intake.\n\n(Tip: type /cancel at any point to abandon the intake.)`,
       );
       return;
     }

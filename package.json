@@ -10,10 +10,12 @@
   },
   "dependencies": {
     "grammy": "^1.30.0",
-    "ioredis": "^5.4.1"
+    "ioredis": "^5.4.1",
+    "pg": "^8.13.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/pg": "^8.11.10",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
   }

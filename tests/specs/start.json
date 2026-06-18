@@ -1,0 +1,13 @@
+[
+  {
+    "name": "/start replies with a welcome",
+    "steps": [
+      {
+        "send": { "text": "/start" },
+        "expect": [
+          { "method": "sendMessage", "payload": { "text": "Welcome! I am ready to help." } }
+        ]
+      }
+    ]
+  }
+]

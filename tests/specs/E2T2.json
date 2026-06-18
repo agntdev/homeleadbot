@@ -1,0 +1,103 @@
+[
+  {
+    "name": "When a buyer taps 'I'm interested' on a posted listing, the bot acknowledges the tap and prompts for the next intake step",
+    "steps": [
+      {
+        "send": {
+          "update": {
+            "update_id": 8001,
+            "my_chat_member": {
+              "chat": { "id": -100900200001, "type": "supergroup", "title": "Mission Buyers" },
+              "from": { "id": 11001, "is_bot": false, "first_name": "Alice" },
+              "date": 0,
+              "old_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "left" },
+              "new_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "member" }
+            }
+          }
+        },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": {
+          "callback": "claim_group:-100900200001",
+          "userId": 11001,
+          "chatId": -100900200001,
+          "messageId": 1
+        },
+        "expect": [{ "method": "answerCallbackQuery" }, { "method": "editMessageText" }]
+      },
+      {
+        "send": { "text": "/create_listing", "userId": 11001, "chatId": 11001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "Sunny 1BR", "userId": 11001, "chatId": 11001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "Bright, south-facing, quiet street.", "userId": 11001, "chatId": 11001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "400000", "userId": 11001, "chatId": 11001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "1", "userId": 11001, "chatId": 11001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "Mission, SF", "userId": 11001, "chatId": 11001 },
+        "expect": [
+          { "method": "sendMessage" },
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": {
+          "callback": "groups:create_listing:group:-100900200001",
+          "userId": 11001,
+          "chatId": 11001,
+          "messageId": 2
+        },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": {
+          "callback": "groups:create_listing:done",
+          "userId": 11001,
+          "chatId": 11001,
+          "messageId": 3
+        },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "sendMessage" },
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": {
+          "callback": "interested:1",
+          "userId": 12001,
+          "chatId": 12001,
+          "messageId": 4
+        },
+        "expect": [
+          {
+            "method": "answerCallbackQuery",
+            "payload": { "text": "Got it \u2014 starting your intake..." }
+          },
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Thanks for your interest in \u201cSunny 1BR\u201d! Send me the location you're looking for as your next message and I'll walk you through the rest of the intake."
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

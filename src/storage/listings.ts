@@ -58,6 +58,13 @@ export interface ListingStore {
   delete(id: number): Promise<boolean>;
   /** Delete listings older than `retentionDays` days. Returns the row count. */
   purgeOlderThanDays(retentionDays: number): Promise<number>;
+  /**
+   * Record that a listing was posted to a group (E2T2). The message_id is
+   * the Telegram message_id of the post; the bot stores it so later
+   * features (E4 lead routing, unpost) can refer back to the exact
+   * message. Idempotent on (listing_id, group_id) — first post wins.
+   */
+  attachToGroup(listingId: number, groupId: number, messageId: number): Promise<void>;
 }
 
 // --- PostgreSQL implementation ---------------------------------------------
@@ -145,6 +152,15 @@ class PostgresListingStore implements ListingStore {
     );
     return rowCount ?? 0;
   }
+
+  async attachToGroup(listingId: number, groupId: number, messageId: number): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO group_listings (listing_id, group_id, message_id, posted_at)
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (listing_id, group_id) DO NOTHING`,
+      [listingId, groupId, messageId],
+    );
+  }
 }
 
 interface ListingRow {
@@ -178,6 +194,8 @@ class InMemoryListingStore implements ListingStore {
   private rows = new Map<number, ListingRecord>();
   /** group_id -> listing_ids (the `group_listings` join table, in-memory). */
   private groupLinks = new Map<number, Set<number>>();
+  /** `${listingId}:${groupId}` -> the per-link details (message_id, posted_at). */
+  private groupLinkDetails = new Map<string, { message_id: number; posted_at: string }>();
 
   async create(input: ListingInput): Promise<ListingRecord> {
     const record: ListingRecord = {
@@ -240,11 +258,24 @@ class InMemoryListingStore implements ListingStore {
     return count;
   }
 
+  async attachToGroup(listingId: number, groupId: number, messageId: number): Promise<void> {
+    // Idempotent: if the (listing, group) pair is already linked, leave it.
+    // The Map below is keyed by `${listingId}:${groupId}` to keep the
+    // invariant that each pair is unique.
+    const key = `${listingId}:${groupId}`;
+    if (this.groupLinkDetails.has(key)) return;
+    this.groupLinkDetails.set(key, { message_id: messageId, posted_at: new Date().toISOString() });
+    let set = this.groupLinks.get(groupId);
+    if (!set) { set = new Set(); this.groupLinks.set(groupId, set); }
+    set.add(listingId);
+  }
+
   /** Test-only: link a listing to a group (mirrors the `group_listings` insert). */
   _linkGroup(listingId: number, groupId: number) {
     let set = this.groupLinks.get(groupId);
     if (!set) { set = new Set(); this.groupLinks.set(groupId, set); }
     set.add(listingId);
+    this.groupLinkDetails.set(`${listingId}:${groupId}`, { message_id: 0, posted_at: new Date().toISOString() });
   }
 }
 

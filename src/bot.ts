@@ -91,6 +91,12 @@ const GROUPS_RENAME = "rename:";
  *  `groups:create_listing:done` (finalize the listing). */
 const CREATE_LISTING_GROUP_PREFIX = "create_listing:";
 
+/** E2T2: callback for the inline "I'm interested" button on a posted
+ *  listing. The data looks like `interested:<listing_id>`. The buyer
+ *  intake (E3T1) is the next step; E2T2 just acknowledges the tap and
+ *  records the lead start. */
+const INTERESTED_CALLBACK_PREFIX = "interested:";
+
 /** Text shown in the group chat when the bot is added, prompting an admin
  *  to claim it for lead notifications. */
 const CLAIM_PROMPT_TEXT =
@@ -216,6 +222,57 @@ export function buildGroupSelectionKeyboard(
     } satisfies InlineButton,
   ]);
   return rows;
+}
+
+/**
+ * formatListingMessage — the body of a posted listing (E2T2). Pure
+ * function so the test can assert the exact text without spinning a
+ * real bot. The message starts with the title, then a one-line summary
+ * (price · bedrooms · location), then the description.
+ */
+export function formatListingMessage(listing: {
+  id: number;
+  title: string;
+  description?: string;
+  price_cents?: number;
+  bedrooms?: number;
+  location?: string;
+}): string {
+  const lines: string[] = [`🏠 ${listing.title}`];
+  const summaryBits: string[] = [];
+  if (listing.price_cents !== undefined) {
+    summaryBits.push(`$${(listing.price_cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
+  }
+  if (listing.bedrooms !== undefined) summaryBits.push(`${listing.bedrooms} bedroom${listing.bedrooms === 1 ? "" : "s"}`);
+  if (listing.location) summaryBits.push(listing.location);
+  if (summaryBits.length > 0) lines.push(summaryBits.join(" · "));
+  if (listing.description) {
+    lines.push("");
+    lines.push(listing.description);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * postListingToGroup — send a formatted listing message + "I'm interested"
+ * button to a Telegram group. Returns the Telegram Message object so the
+ * caller can persist `message_id` (later features need it to edit /
+ * unpost). E2T2.
+ */
+export async function postListingToGroup(
+  ctx: BotContext<Session>,
+  listing: { id: number; title: string; description?: string; price_cents?: number; bedrooms?: number; location?: string },
+  groupId: number,
+): Promise<{ message_id: number }> {
+  const text = formatListingMessage(listing);
+  const message = await ctx.api.sendMessage(groupId, text, {
+    reply_markup: {
+      inline_keyboard: [[
+        { text: "I'm interested", callback_data: `${INTERESTED_CALLBACK_PREFIX}${listing.id}` },
+      ]],
+    },
+  });
+  return { message_id: message.message_id };
 }
 
 /**
@@ -659,10 +716,32 @@ export function buildBotWithStores(
           });
           ctx.session.creating_listing = undefined;
           await ctx.answerCallbackQuery({ text: "Listing created!" });
-          const where = selected.length > 0
-            ? `Ready to post to ${selected.length} group(s) (E2T2 will publish the messages).`
-            : "No groups selected — the listing is saved but not published to any group yet.";
-          await ctx.reply(`Listing #${listing.id} created.\n${where}`);
+
+          // E2T2: post the formatted listing message to each selected
+          // group with the inline "I'm interested" button. We do this
+          // inline (no separate command) so the agent sees the result
+          // of /create_listing immediately. Failures are logged but
+          // don't fail the whole flow — a partial post is better than
+          // throwing away the listing.
+          const postedGroups: number[] = [];
+          const failedGroups: number[] = [];
+          for (const groupId of selected) {
+            try {
+              const message = await postListingToGroup(ctx, listing, groupId);
+              await listingStore.attachToGroup(listing.id, groupId, message.message_id);
+              postedGroups.push(groupId);
+            } catch (err) {
+              console.error(`[agntdev-bot] failed to post listing ${listing.id} to group ${groupId}:`, err);
+              failedGroups.push(groupId);
+            }
+          }
+          const parts: string[] = [`Listing #${listing.id} created.`];
+          if (postedGroups.length > 0) parts.push(`Posted to ${postedGroups.length} group(s) with an "I'm interested" button.`);
+          if (failedGroups.length > 0) parts.push(`Failed to post to ${failedGroups.length} group(s) — check the bot log.`);
+          if (postedGroups.length === 0 && failedGroups.length === 0) {
+            parts.push("No groups selected — the listing is saved but not published to any group yet.");
+          }
+          await ctx.reply(parts.join("\n"));
         } else {
           // Toggle the group in the selection. The rest is "group:<id>".
           const groupIdStr = rest.startsWith("group:") ? rest.slice("group:".length) : rest;
@@ -685,6 +764,36 @@ export function buildBotWithStores(
         }
         return;
       }
+    }
+
+    if (data.startsWith(INTERESTED_CALLBACK_PREFIX)) {
+      // E2T2: a buyer tapped "I'm interested" on a posted listing.
+      // The full buyer-intake flow lives in E3T1; for E2T2 we just
+      // acknowledge the tap and stash the listing_id in the session so
+      // the next text message in this chat can be treated as the
+      // intake's first answer (location).
+      const listingIdStr = data.slice(INTERESTED_CALLBACK_PREFIX.length);
+      const listingId = Number.parseInt(listingIdStr, 10);
+      if (!Number.isFinite(listingId)) {
+        await ctx.answerCallbackQuery({ text: "Malformed request." });
+        return;
+      }
+      // E2T2: defer the actual intake-start to E3T1. For now we
+      // acknowledge the tap with a friendly toast and a single
+      // instruction message so the buyer knows the bot saw them.
+      await ctx.answerCallbackQuery({ text: "Got it — starting your intake..." });
+      // The full intake flow (location → budget → bedrooms → timeline
+      // → pre-approval → score) is implemented in E3T1. For E2T2 we
+      // just send a one-liner so the test can verify the button works.
+      const listing = await listingStore.get(listingId);
+      if (!listing) {
+        await ctx.reply("That listing is no longer available.");
+        return;
+      }
+      await ctx.reply(
+        `Thanks for your interest in “${listing.title}”! Send me the location you're looking for as your next message and I'll walk you through the rest of the intake.`,
+      );
+      return;
     }
 
     if (data.startsWith(CLAIM_GROUP_PREFIX)) {

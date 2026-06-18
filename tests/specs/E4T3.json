@@ -1,0 +1,139 @@
+[
+  {
+    "name": "Full flow: agent creates listing, buyer taps 'I'm interested', the test fast-forwards the 24h follow-up and the buyer receives the nudge",
+    "steps": [
+      {
+        "send": {
+          "update": {
+            "update_id": 13001,
+            "my_chat_member": {
+              "chat": { "id": -100900700001, "type": "supergroup", "title": "Followup Buyers" },
+              "from": { "id": 22001, "is_bot": false, "first_name": "Alice" },
+              "date": 0,
+              "old_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "left" },
+              "new_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "member" }
+            }
+          }
+        },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": {
+          "callback": "claim_group:-100900700001",
+          "userId": 22001,
+          "chatId": -100900700001,
+          "messageId": 1
+        },
+        "expect": [{ "method": "answerCallbackQuery" }, { "method": "editMessageText" }]
+      },
+      {
+        "send": { "text": "/create_listing", "userId": 22001, "chatId": 22001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "T", "userId": 22001, "chatId": 22001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "D", "userId": 22001, "chatId": 22001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "1", "userId": 22001, "chatId": 22001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "1", "userId": 22001, "chatId": 22001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "SOMA", "userId": 22001, "chatId": 22001 },
+        "expect": [
+          { "method": "sendMessage" },
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": {
+          "callback": "groups:create_listing:group:-100900700001",
+          "userId": 22001,
+          "chatId": 22001,
+          "messageId": 2
+        },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": {
+          "callback": "groups:create_listing:done",
+          "userId": 22001,
+          "chatId": 22001,
+          "messageId": 3
+        },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "sendMessage" },
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": {
+          "callback": "interested:1",
+          "userId": 23001,
+          "chatId": 23001,
+          "messageId": 4
+        },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": { "text": "L", "userId": 23001, "chatId": 23001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "skip", "userId": 23001, "chatId": 23001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "skip", "userId": 23001, "chatId": 23001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "3-6m", "userId": 23001, "chatId": 23001 },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "text": "yes", "userId": 23001, "chatId": 23001 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Thanks! Your lead has been recorded (lead #1, tier B \u2014 warm). The agent will reach out soon."
+            }
+          }
+        ]
+      },
+      {
+        "send": {
+          "callback": "test:due_followup:1",
+          "userId": 23001,
+          "chatId": 23001,
+          "messageId": 5
+        },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "chat_id": 23001,
+              "text": "Just checking in on your interest in \u201cT\u201d \u2014 any questions? If you've found something else, no worries \u2014 thanks for reaching out!"
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

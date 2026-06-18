@@ -1,0 +1,72 @@
+[
+  {
+    "name": "First /start registers the agent (idempotent on userId) and uses 'You're registered' copy",
+    "steps": [
+      {
+        "send": { "text": "/start", "userId": 2001 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Welcome to HomeLeadBot, Test! 🏠\n\nYou're registered as an agent. I help you post listings, capture buyer leads, and deliver hot-lead notifications. Pick an option below to get started."
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "Second /start in the same dialog (same userId) recognises the returning agent and uses 'Welcome back' copy",
+    "steps": [
+      {
+        "send": { "text": "/start", "userId": 2002 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Welcome to HomeLeadBot, Test! 🏠\n\nYou're registered as an agent. I help you post listings, capture buyer leads, and deliver hot-lead notifications. Pick an option below to get started."
+            }
+          }
+        ]
+      },
+      {
+        "send": { "text": "/start", "userId": 2002 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Welcome back, Test! 🏠\n\nI help you post listings, capture buyer leads, and deliver hot-lead notifications. Pick an option below to get started."
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "Different userIds are registered independently (each gets 'You're registered' on first /start)",
+    "steps": [
+      {
+        "send": { "text": "/start", "userId": 3001 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Welcome to HomeLeadBot, Test! 🏠\n\nYou're registered as an agent. I help you post listings, capture buyer leads, and deliver hot-lead notifications. Pick an option below to get started."
+            }
+          }
+        ]
+      },
+      {
+        "send": { "text": "/start", "userId": 3002 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "text": "Welcome to HomeLeadBot, Test! 🏠\n\nYou're registered as an agent. I help you post listings, capture buyer leads, and deliver hot-lead notifications. Pick an option below to get started."
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

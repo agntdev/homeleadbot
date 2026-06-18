@@ -3,9 +3,11 @@ import {
   type BotContext,
   inlineButton,
   inlineKeyboard,
+  type InlineButton,
 } from "./toolkit/index.js";
 import { createAgentStore, type AgentStore } from "./storage/agents.js";
 import { createGroupStore, type GroupStore } from "./storage/groups.js";
+import { createListingStore, type ListingStore } from "./storage/listings.js";
 import { createDb, type PgPool } from "./storage/db.js";
 import { runMigration } from "./storage/migrate.js";
 
@@ -16,6 +18,23 @@ export interface Session {
   /** E1T3: group_id the agent is currently renaming (next text message
    *  is treated as the new title). Cleared once the rename completes. */
   renaming_group_id?: number;
+
+  /** E2T1: in-flight /create_listing conversation. `step` is the next field
+   *  the bot is waiting for; `data` is the partial record so far; once we
+   *  reach the "groups" step we render the agent's claimed groups as
+   *  inline buttons. Cleared on creation, cancel, or session reset. */
+  creating_listing?: {
+    step: "title" | "description" | "price" | "bedrooms" | "location" | "groups";
+    data: {
+      title?: string;
+      description?: string;
+      price_cents?: number;
+      bedrooms?: number;
+      location?: string;
+    };
+    /** group_ids the agent has already selected (multi-select). */
+    selected_group_ids?: number[];
+  };
 }
 
 /** Callback prefix for main-menu buttons. Routed in the callback handler below. */
@@ -44,6 +63,8 @@ const KNOWN_COMMANDS: ReadonlySet<string> = new Set([
   "start",
   "help",
   "groups",
+  "create_listing",
+  "cancel",
   "bang",
 ]);
 
@@ -64,6 +85,11 @@ const CLAIM_GROUP_PREFIX = "claim_group:";
 const GROUPS_PREFIX = "groups:";
 const GROUPS_DETACH = "detach:";
 const GROUPS_RENAME = "rename:";
+
+/** E2T1: /create_listing group-selection callback. The data looks like
+ *  `groups:create_listing:group:<id>` (toggle a group) or
+ *  `groups:create_listing:done` (finalize the listing). */
+const CREATE_LISTING_GROUP_PREFIX = "create_listing:";
 
 /** Text shown in the group chat when the bot is added, prompting an admin
  *  to claim it for lead notifications. */
@@ -138,6 +164,61 @@ export async function renderGroupsList(
 }
 
 /**
+ * renderGroupSelectionMessage — the body of the /create_listing group
+ * selection step (E2T1). One row per claimed group with a checkmark for
+ * the ones the agent has already toggled, plus a "Done" row that finalises
+ * the listing.
+ */
+export function renderGroupSelectionMessage(
+  claimedGroups: ReadonlyArray<{ group_id: number; group_title?: string }>,
+  selected: ReadonlyArray<number>,
+): string {
+  if (claimedGroups.length === 0) {
+    return "You have no claimed groups — /create_listing needs at least one.";
+  }
+  const lines = claimedGroups.map((g, i) => {
+    const checked = selected.includes(g.group_id) ? "✅" : "⬜";
+    return `${checked} ${i + 1}. ${g.group_title ?? `Group ${g.group_id}`}`;
+  });
+  const sel = selected.length;
+  return [
+    "Which group(s) should I post this listing to?",
+    "",
+    ...lines,
+    "",
+    sel === 0
+      ? "Tap a row to toggle it. No groups selected means the listing is saved but not published."
+      : `${sel} group(s) selected. Tap another row to toggle, or tap Done to publish.`,
+  ].join("\n");
+}
+
+/**
+ * buildGroupSelectionKeyboard — the inline-keyboard matrix for the
+ * /create_listing group selection. One row per claimed group, plus a
+ * "Done" row at the bottom. Callback data is namespaced
+ * `groups:create_listing:group:<id>` (toggle) or
+ * `groups:create_listing:done` (finalize).
+ */
+export function buildGroupSelectionKeyboard(
+  claimedGroups: ReadonlyArray<{ group_id: number; group_title?: string }>,
+  _selected: ReadonlyArray<number>,
+): InlineButton[][] {
+  const rows = claimedGroups.map((g) => [
+    {
+      text: g.group_title ?? `Group ${g.group_id}`,
+      callback_data: `${GROUPS_PREFIX}${CREATE_LISTING_GROUP_PREFIX}group:${g.group_id}`,
+    } satisfies InlineButton,
+  ]);
+  rows.push([
+    {
+      text: "✅ Done",
+      callback_data: `${GROUPS_PREFIX}${CREATE_LISTING_GROUP_PREFIX}done`,
+    } satisfies InlineButton,
+  ]);
+  return rows;
+}
+
+/**
  * buildBot — assembles the bot and registers every handler, but does NOT start
  * it. Shared by the runtime entry (src/index.ts) and the Tests-gate harness
  * (src/harness-entry.ts) so both exercise the exact same bot. Add new commands
@@ -158,6 +239,7 @@ export function buildBot(
     token,
     createAgentStore(process.env, db),
     createGroupStore(process.env, db),
+    createListingStore(process.env, db),
   );
 }
 
@@ -186,6 +268,7 @@ export function buildBotWithStores(
   token: string,
   agentStore: AgentStore,
   groupStore: GroupStore,
+  listingStore: ListingStore,
 ) {
   const bot = createBot<Session>(token, {
     initial: () => ({}),
@@ -267,6 +350,53 @@ export function buildBotWithStores(
     await renderGroupsList(ctx, agentStore, groupStore);
   });
 
+  // /create_listing — E2T1 listing creation. Starts a multi-step
+  // conversation (title → description → price → bedrooms → location →
+  // group selection) in the session. The next non-command text message
+  // in this chat advances the step; the group-selection step is driven
+  // by the `create_listing:group:*` / `create_listing:done` callbacks.
+  bot.command("create_listing", async (ctx: BotContext<Session>) => {
+    const agentId = ctx.from?.id;
+    if (agentId === undefined) {
+      await ctx.reply("Could not identify you — try /create_listing from a Telegram account.");
+      return;
+    }
+    const claimedGroups = await groupStore.listByAgent(agentId);
+    if (claimedGroups.length === 0) {
+      await ctx.reply(
+        "You haven't claimed any groups yet. Add the bot to a Telegram group, tap “Claim this group”, and come back — listings are only published to groups you've claimed.",
+      );
+      return;
+    }
+    // If a previous /create_listing is still in flight, restart from the
+    // beginning (the agent probably abandoned it). Clear the session.
+    ctx.session.creating_listing = {
+      step: "title",
+      data: {},
+      selected_group_ids: [],
+    };
+    await ctx.reply(
+      "Let's create a listing. Send me the title as your next message.\n\n(Tip: type /cancel at any point to abandon the draft.)",
+    );
+  });
+
+  // /cancel — abandons an in-flight /create_listing or rename session.
+  // Without this, an abandoned /create_listing would leave the session
+  // stuck on the next text message the agent sends.
+  bot.command("cancel", async (ctx: BotContext<Session>) => {
+    if (ctx.session.creating_listing) {
+      ctx.session.creating_listing = undefined;
+      await ctx.reply("Listing draft cancelled.");
+      return;
+    }
+    if (ctx.session.renaming_group_id !== undefined) {
+      ctx.session.renaming_group_id = undefined;
+      await ctx.reply("Rename cancelled.");
+      return;
+    }
+    await ctx.reply("Nothing to cancel.");
+  });
+
   // /bang — debug hook: intentionally throws so operators (and the test
   // harness) can verify the error boundary is alive. The boundary's graceful
   // reply is the contract — without /bang, a real bug would also be caught
@@ -275,15 +405,115 @@ export function buildBotWithStores(
     throw new Error("intentional /bang error (used to verify the error boundary)");
   });
 
-  // Unknown-command fallback (T03) + rename-text pickup (E1T3). Order
-  // matters: a non-command text message first checks for a pending rename
-  // (session.renaming_group_id set by the groups:rename callback); if no
-  // rename is pending we fall through to the normal handler chain. For
-  // messages that DO start with "/", we route known vs unknown commands
-  // the same way T03 does.
+  // Unknown-command fallback (T03) + rename-text pickup (E1T3) +
+  // /create_listing text pickup (E2T1). Order matters: a non-command
+  // text message first checks for an in-flight /create_listing session
+  // (advances the step), then for a pending rename, then falls through
+  // to the normal chain. Messages that DO start with "/" go to the
+  // known/unknown command router.
   bot.on("message", async (ctx: BotContext<Session>, next) => {
     const msg = ctx.message;
     if (!msg || !msg.text) return next();
+
+    // E2T1: /create_listing text pickup. Only consume the message if
+    // it's a plain text reply (not a /command) and the session has an
+    // in-flight listing. Each step validates the field and replies with
+    // the next prompt; the "groups" step is driven by callbacks, not
+    // text, so we just ignore the text in that case.
+    if (
+      ctx.session.creating_listing !== undefined &&
+      !msg.text.startsWith("/")
+    ) {
+      const agentId = ctx.from?.id;
+      if (agentId === undefined) {
+        await ctx.reply("Could not identify you — listing draft cancelled.");
+        ctx.session.creating_listing = undefined;
+        return;
+      }
+      const draft = ctx.session.creating_listing;
+      const text = msg.text.trim();
+      switch (draft.step) {
+        case "title": {
+          if (text.length === 0) {
+            await ctx.reply("Empty title — send a non-empty title, or /cancel to abandon.");
+            return;
+          }
+          draft.data.title = text;
+          draft.step = "description";
+          await ctx.reply(`Title set to “${text}”. Now send me a short description (1-2 sentences).`);
+          return;
+        }
+        case "description": {
+          if (text.length === 0) {
+            await ctx.reply("Empty description — send a non-empty description, or /cancel to abandon.");
+            return;
+          }
+          draft.data.description = text;
+          draft.step = "price";
+          await ctx.reply(`Got it. Now send the price in cents (e.g. \`100000\` for $1000), or type \`skip\` to leave it blank.`);
+          return;
+        }
+        case "price": {
+          if (text === "skip") {
+            draft.step = "bedrooms";
+            await ctx.reply("Price skipped. Now send the number of bedrooms, or type `skip`.");
+            return;
+          }
+          const n = Number.parseInt(text.replace(/[,\s_]/g, ""), 10);
+          if (!Number.isFinite(n) || n < 0) {
+            await ctx.reply("That doesn't look like a price. Send a non-negative integer (cents), or `skip`.");
+            return;
+          }
+          draft.data.price_cents = n;
+          draft.step = "bedrooms";
+          await ctx.reply(`Price set to ${n} cents. Now send the number of bedrooms, or type \`skip\`.`);
+          return;
+        }
+        case "bedrooms": {
+          if (text === "skip") {
+            draft.step = "location";
+            await ctx.reply("Bedrooms skipped. Now send the location (city / ZIP / free text), or type `skip`.");
+            return;
+          }
+          const n = Number.parseInt(text, 10);
+          if (!Number.isFinite(n) || n < 0) {
+            await ctx.reply("That doesn't look like a bedroom count. Send a non-negative integer, or `skip`.");
+            return;
+          }
+          draft.data.bedrooms = n;
+          draft.step = "location";
+          await ctx.reply(`Bedrooms set to ${n}. Now send the location (city / ZIP / free text), or type \`skip\`.`);
+          return;
+        }
+        case "location": {
+          if (text === "skip") {
+            draft.step = "groups";
+            const claimed = await groupStore.listByAgent(agentId);
+            const sel = draft.selected_group_ids ?? [];
+            await ctx.reply("Location skipped. Now pick the group(s) to post to:");
+            await ctx.reply(renderGroupSelectionMessage(claimed, sel), {
+              reply_markup: { inline_keyboard: buildGroupSelectionKeyboard(claimed, sel) },
+            });
+            return;
+          }
+          draft.data.location = text;
+          draft.step = "groups";
+          const claimed = await groupStore.listByAgent(agentId);
+          const sel = draft.selected_group_ids ?? [];
+          await ctx.reply(`Location set to “${text}”. Now pick the group(s) to post to:`);
+          await ctx.reply(renderGroupSelectionMessage(claimed, sel), {
+            reply_markup: { inline_keyboard: buildGroupSelectionKeyboard(claimed, sel) },
+          });
+          return;
+        }
+        case "groups": {
+          // The "groups" step is driven by callbacks. A stray text message
+          // here is a no-op — the next callback will continue the flow.
+          await ctx.reply("Tap a group row to toggle it, or tap Done to publish.");
+          return;
+        }
+      }
+    }
 
     // E1T3: rename pickup. Only consume the message if it's a plain text
     // reply (not a /command) and the session has a pending rename.
@@ -340,6 +570,34 @@ export function buildBotWithStores(
       return;
     }
 
+    if (data === `${MENU_PREFIX}create_listing`) {
+      // The main-menu Create listing button starts the /create_listing
+      // conversation (E2T1) inline. Spinner stops first; the bot then
+      // sends the "send me the title" prompt.
+      await ctx.answerCallbackQuery({ text: "Starting a new listing..." });
+      const agentId = ctx.from?.id;
+      if (agentId === undefined) {
+        await ctx.reply("Could not identify you — try from a Telegram account.");
+        return;
+      }
+      const claimedGroups = await groupStore.listByAgent(agentId);
+      if (claimedGroups.length === 0) {
+        await ctx.reply(
+          "You haven't claimed any groups yet. Add the bot to a Telegram group, tap “Claim this group”, and come back — listings are only published to groups you've claimed.",
+        );
+        return;
+      }
+      ctx.session.creating_listing = {
+        step: "title",
+        data: {},
+        selected_group_ids: [],
+      };
+      await ctx.reply(
+        "Let's create a listing. Send me the title as your next message.\n\n(Tip: type /cancel at any point to abandon the draft.)",
+      );
+      return;
+    }
+
     if (data.startsWith(GROUPS_PREFIX)) {
       // /groups management actions: detach or rename a claimed group.
       if (data.startsWith(GROUPS_DETACH, GROUPS_PREFIX.length)) {
@@ -372,6 +630,59 @@ export function buildBotWithStores(
         ctx.session.renaming_group_id = groupId;
         await ctx.answerCallbackQuery({ text: "Send the new name as your next message." });
         await ctx.reply(`Sure — send me the new name for this group as your next message. (Title will be applied on the next text you send.)`);
+        return;
+      }
+      // E2T1: /create_listing group-selection step.
+      if (data.startsWith(CREATE_LISTING_GROUP_PREFIX, GROUPS_PREFIX.length)) {
+        // data looks like "groups:create_listing:group:<id>" or "groups:create_listing:done"
+        const rest = data.slice(GROUPS_PREFIX.length + CREATE_LISTING_GROUP_PREFIX.length);
+        if (rest === "done") {
+          // Finalize the listing.
+          if (!ctx.session.creating_listing) {
+            await ctx.answerCallbackQuery({ text: "No listing in progress." });
+            return;
+          }
+          const selected = ctx.session.creating_listing.selected_group_ids ?? [];
+          const data2 = ctx.session.creating_listing.data;
+          if (data2.title === undefined) {
+            await ctx.answerCallbackQuery({ text: "Title missing — start over with /create_listing." });
+            ctx.session.creating_listing = undefined;
+            return;
+          }
+          const listing = await listingStore.create({
+            agent_id: ctx.from!.id!,
+            title: data2.title,
+            ...(data2.description !== undefined ? { description: data2.description } : {}),
+            ...(data2.price_cents !== undefined ? { price_cents: data2.price_cents } : {}),
+            ...(data2.bedrooms !== undefined ? { bedrooms: data2.bedrooms } : {}),
+            ...(data2.location !== undefined ? { location: data2.location } : {}),
+          });
+          ctx.session.creating_listing = undefined;
+          await ctx.answerCallbackQuery({ text: "Listing created!" });
+          const where = selected.length > 0
+            ? `Ready to post to ${selected.length} group(s) (E2T2 will publish the messages).`
+            : "No groups selected — the listing is saved but not published to any group yet.";
+          await ctx.reply(`Listing #${listing.id} created.\n${where}`);
+        } else {
+          // Toggle the group in the selection. The rest is "group:<id>".
+          const groupIdStr = rest.startsWith("group:") ? rest.slice("group:".length) : rest;
+          const groupId = Number.parseInt(groupIdStr, 10);
+          if (!Number.isFinite(groupId) || !ctx.session.creating_listing) {
+            await ctx.answerCallbackQuery({ text: "Malformed selection." });
+            return;
+          }
+          const sel = ctx.session.creating_listing.selected_group_ids ?? [];
+          const idx = sel.indexOf(groupId);
+          if (idx >= 0) sel.splice(idx, 1);
+          else sel.push(groupId);
+          ctx.session.creating_listing.selected_group_ids = sel;
+          await ctx.answerCallbackQuery({ text: sel.length === 0 ? "No groups selected" : `${sel.length} group(s) selected` });
+          // Re-render the selection prompt with updated checkmarks.
+          const claimed = await groupStore.listByAgent(ctx.from!.id!);
+          await ctx.reply(renderGroupSelectionMessage(claimed, sel), {
+            reply_markup: { inline_keyboard: buildGroupSelectionKeyboard(claimed, sel) },
+          });
+        }
         return;
       }
     }

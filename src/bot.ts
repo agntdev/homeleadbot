@@ -117,6 +117,13 @@ const CREATE_LISTING_GROUP_PREFIX = "create_listing:";
  *  records the lead start. */
 const INTERESTED_CALLBACK_PREFIX = "interested:";
 
+/** E4T1: action buttons on the agent's hot-lead DM.
+ *  `lead:<id>:contact` opens a contact flow; `lead:<id>:contacted`
+ *  marks the lead's status as "contacted". */
+const LEAD_ACTION_PREFIX = "lead:";
+const LEAD_ACTION_CONTACT = "contact";
+const LEAD_ACTION_CONTACTED = "contacted";
+
 /** Text shown in the group chat when the bot is added, prompting an admin
  *  to claim it for lead notifications. */
 const CLAIM_PROMPT_TEXT =
@@ -293,6 +300,93 @@ export async function postListingToGroup(
     },
   });
   return { message_id: message.message_id };
+}
+
+/**
+ * formatLeadMessage — the body of the hot-lead notification (E4T1).
+ * Pure function so the test can assert the exact text. Renders the
+ * listing title, the buyer's contact (@username / display name), and
+ * the captured intake Q&A.
+ */
+export function formatLeadMessage(
+  lead: {
+    id: number;
+    listing_id?: number;
+    buyer_telegram_id: number;
+    buyer_username?: string;
+    buyer_display_name?: string;
+  },
+  listing: { id: number; title: string } | undefined,
+  intakeItems: ReadonlyArray<{ question: string; answer: string }>,
+): string {
+  const lines: string[] = [];
+  const handle = lead.buyer_username ? `@${lead.buyer_username}` : lead.buyer_display_name ?? `user${lead.buyer_telegram_id}`;
+  lines.push(`🔥 Hot lead #${lead.id}`);
+  if (listing) lines.push(`Listing: ${listing.title} (id ${listing.id})`);
+  lines.push(`Buyer: ${handle} (telegram id ${lead.buyer_telegram_id})`);
+  lines.push("");
+  if (intakeItems.length === 0) {
+    lines.push("(no intake answers captured)");
+  } else {
+    for (const item of intakeItems) {
+      lines.push(`• ${item.question}: ${item.answer}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+/**
+ * routeHotLead — E4T1 dispatcher. Given a freshly-created A-tier lead,
+ * post the formatted lead message to every group the listing was posted
+ * to (so the group sees who's interested), then DM the listing's agent
+ * with the same info + action buttons. Failures on individual posts are
+ * logged but never throw — the lead is already persisted, so a partial
+ * notification is acceptable.
+ */
+export async function routeHotLead(
+  ctx: BotContext<Session>,
+  leadStore: LeadStore,
+  listingStore: ListingStore,
+  leadId: number,
+  listingId: number,
+): Promise<void> {
+  const lead = await leadStore.get(leadId);
+  if (!lead) return;
+  const listing = await listingStore.get(listingId);
+  if (!listing) return;
+  const intake = await leadStore.listIntakeItems(leadId);
+  const body = formatLeadMessage(lead, listing, intake);
+
+  // Post to every group the listing was posted to. The listing might
+  // have been posted to multiple groups (E2T1's multi-select); all
+  // groups get the notification.
+  const groups = await listingStore.listGroupsForListing(listingId);
+  for (const groupId of groups) {
+    try {
+      await ctx.api.sendMessage(groupId, body);
+      await leadStore.addEvent(leadId, "hot_lead_group_notified", { group_id: groupId });
+    } catch (err) {
+      console.error(`[agntdev-bot] failed to notify group ${groupId} about lead ${leadId}:`, err);
+    }
+  }
+
+  // DM the listing's agent. The agent's telegram_id is the listing's
+  // agent_id (per the AgentRecord schema).
+  try {
+    await ctx.api.sendMessage(listing.agent_id, body, {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: "📞 Contact buyer", callback_data: `${LEAD_ACTION_PREFIX}${leadId}:${LEAD_ACTION_CONTACT}` },
+            { text: "✓ Mark contacted", callback_data: `${LEAD_ACTION_PREFIX}${leadId}:${LEAD_ACTION_CONTACTED}` },
+          ],
+        ],
+      },
+    });
+    await leadStore.addEvent(leadId, "hot_lead_agent_notified", { agent_id: listing.agent_id });
+  } catch (err) {
+    console.error(`[agntdev-bot] failed to DM agent ${listing.agent_id} about lead ${leadId}:`, err);
+  }
 }
 
 /**
@@ -764,6 +858,15 @@ export function buildBotWithStores(
           await ctx.reply(
             `Thanks! Your lead has been recorded (lead #${lead.id}, tier ${score} — ${scoreLabel}). The agent will reach out soon.`,
           );
+
+          // E4T1: hot-lead routing for tier A. Post the lead to the
+          // originating group(s) with the full intake + buyer's
+          // @username, then DM the listing's agent with the same info
+          // and action buttons. Other tiers fall through to the
+          // digest (E4T2) and follow-up (E4T3) flows.
+          if (score === "A" && leadListingId !== undefined) {
+            await routeHotLead(ctx, leadStore, listingStore, lead.id, leadListingId);
+          }
           return;
         }
         case "done": {
@@ -798,6 +901,49 @@ export function buildBotWithStores(
     if (!cq) return; // not a callback_query update — nothing to route.
     const data = cq.data;
     if (!data) return; // callback query without data — nothing we can route.
+
+    if (data.startsWith(LEAD_ACTION_PREFIX)) {
+      // E4T1: agent action on a hot-lead DM. `lead:<id>:contact` opens
+      // a contact flow; `lead:<id>:contacted` marks the lead's status
+      // as "contacted" in the store.
+      const rest = data.slice(LEAD_ACTION_PREFIX.length); // "<id>:<action>"
+      const sep = rest.indexOf(":");
+      if (sep < 0) {
+        await ctx.answerCallbackQuery({ text: "Malformed action." });
+        return;
+      }
+      const leadIdStr = rest.slice(0, sep);
+      const action = rest.slice(sep + 1);
+      const leadId = Number.parseInt(leadIdStr, 10);
+      if (!Number.isFinite(leadId)) {
+        await ctx.answerCallbackQuery({ text: "Malformed action." });
+        return;
+      }
+      const lead = await leadStore.get(leadId);
+      if (!lead) {
+        await ctx.answerCallbackQuery({ text: "Lead not found." });
+        return;
+      }
+      if (action === LEAD_ACTION_CONTACT) {
+        await ctx.answerCallbackQuery({ text: "Open Telegram chat with the buyer and reach out." });
+        await ctx.reply(
+          `Open a chat with buyer @${lead.buyer_username ?? lead.buyer_display_name ?? `user${lead.buyer_telegram_id}`} (telegram id \`${lead.buyer_telegram_id}\`) to follow up.`,
+        );
+        return;
+      }
+      if (action === LEAD_ACTION_CONTACTED) {
+        const now = new Date().toISOString();
+        await leadStore.update(leadId, { status: "contacted", last_contacted_at: now });
+        await leadStore.addEvent(leadId, "marked_contacted", { at: now });
+        await ctx.answerCallbackQuery({ text: "Marked contacted — follow-up suppressed." });
+        try {
+          await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } });
+        } catch { /* the original DM may be uneditable; the toast is enough */ }
+        return;
+      }
+      await ctx.answerCallbackQuery({ text: "Unknown action." });
+      return;
+    }
 
     if (data === GROUPS_MENU_DATA) {
       // Open the /groups management list inline (E1T3). Spinner stops

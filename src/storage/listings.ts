@@ -65,6 +65,9 @@ export interface ListingStore {
    * message. Idempotent on (listing_id, group_id) — first post wins.
    */
   attachToGroup(listingId: number, groupId: number, messageId: number): Promise<void>;
+  /** E4T1: every group this listing was posted to. Used to find the
+   *  originating group when a lead comes in. */
+  listGroupsForListing(listingId: number): Promise<number[]>;
 }
 
 // --- PostgreSQL implementation ---------------------------------------------
@@ -160,6 +163,21 @@ class PostgresListingStore implements ListingStore {
        ON CONFLICT (listing_id, group_id) DO NOTHING`,
       [listingId, groupId, messageId],
     );
+  }
+
+  /**
+   * listGroupsForListing — every group this listing was posted to
+   * (E2T2's `attachToGroup` records). Used by the lead-routing work
+   * (E4T1) to find the originating group for a hot lead. Cheap: a
+   * single indexed SELECT in the Postgres path, a Map scan in the
+   * in-memory path.
+   */
+  async listGroupsForListing(listingId: number): Promise<number[]> {
+    const { rows } = await this.pool.query(
+      "SELECT group_id FROM group_listings WHERE listing_id = $1 ORDER BY posted_at ASC",
+      [listingId],
+    );
+    return (rows as Array<{ group_id: string | number }>).map((r) => Number(r.group_id));
   }
 }
 
@@ -268,6 +286,14 @@ class InMemoryListingStore implements ListingStore {
     let set = this.groupLinks.get(groupId);
     if (!set) { set = new Set(); this.groupLinks.set(groupId, set); }
     set.add(listingId);
+  }
+
+  async listGroupsForListing(listingId: number): Promise<number[]> {
+    const out: number[] = [];
+    for (const [groupId, listingIds] of this.groupLinks) {
+      if (listingIds.has(listingId)) out.push(groupId);
+    }
+    return out;
   }
 
   /** Test-only: link a listing to a group (mirrors the `group_listings` insert). */

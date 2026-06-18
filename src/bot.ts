@@ -84,6 +84,7 @@ const KNOWN_COMMANDS: ReadonlySet<string> = new Set([
   "help",
   "groups",
   "create_listing",
+  "digest",
   "cancel",
   "bang",
 ]);
@@ -575,6 +576,32 @@ export function buildBotWithStores(
     await ctx.reply("Nothing to cancel.");
   });
 
+  // /digest — E4T2 daily digest. Sends the agent a DM listing every
+  // B-tier lead created in the last 24 hours. The real scheduler that
+  // calls into this on a cron is E5T3's job; for now the agent
+  // triggers it on demand with /digest. Tier-A leads already get
+  // instant routing via E4T1, so they're not in the digest.
+  bot.command("digest", async (ctx: BotContext<Session>) => {
+    const agentId = ctx.from?.id;
+    if (agentId === undefined) {
+      await ctx.reply("Could not identify you — try /digest from a Telegram account.");
+      return;
+    }
+    const sinceIso = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const leads = await leadStore.listBLeadsForAgent(agentId, sinceIso);
+    if (leads.length === 0) {
+      await ctx.reply("No B-tier leads in the last 24 hours.");
+      return;
+    }
+    const lines = leads.map((l) => {
+      const handle = l.buyer_username ? `@${l.buyer_username}` : l.buyer_display_name ?? `user${l.buyer_telegram_id}`;
+      return `• lead #${l.id} \u2014 ${handle} (telegram id ${l.buyer_telegram_id})`;
+    });
+    await ctx.reply(
+      `Warm-lead digest (last 24h, ${leads.length} lead${leads.length === 1 ? "" : "s"}):\n` + lines.join("\n"),
+    );
+  });
+
   // /bang — debug hook: intentionally throws so operators (and the test
   // harness) can verify the error boundary is alive. The boundary's graceful
   // reply is the contract — without /bang, a real bug would also be caught
@@ -809,10 +836,12 @@ export function buildBotWithStores(
           // without a listing link).
           let leadListingId: number | undefined;
           let leadGroupId: number | undefined;
+          let listingAgentId: number | undefined;
           if (listingId !== undefined) {
             const listing = await listingStore.get(listingId);
             if (listing) {
               leadListingId = listing.id;
+              listingAgentId = listing.agent_id;
               // E2T2 stored the post via attachToGroup; we don't
               // currently expose listForGroup here, so group_id
               // is left for E4T1 to backfill from the
@@ -828,6 +857,13 @@ export function buildBotWithStores(
             buyer_display_name: ctx.from?.first_name,
             status: "new",
           });
+          // E4T2: register the listing's owner with the in-memory lead
+          // store so /digest (listBLeadsForAgent) can find B leads for
+          // this agent. The Postgres path doesn't need this — the
+          // listBLeadsForAgent query JOINs the listings table.
+          if (leadListingId !== undefined && listingAgentId !== undefined) {
+            leadStore.addListingOwner(leadListingId, listingAgentId);
+          }
           // Persist the intake Q&A as lead_intake_items in the
           // order the buyer answered them. Each row captures the
           // question + the answer.

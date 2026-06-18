@@ -34,6 +34,25 @@ const KNOWN_COMMANDS: ReadonlySet<string> = new Set([
   "bang",
 ]);
 
+/** Telegram chat-member statuses that mean "the bot is in the chat". E1T2
+ *  only prompts for a group claim on transitions INTO one of these. */
+const BOT_IN_CHAT_STATUSES: ReadonlySet<string> = new Set([
+  "member",
+  "administrator",
+  "creator",
+]);
+
+/** Callback prefix for the inline "Claim this group" button (E1T2). */
+const CLAIM_GROUP_PREFIX = "claim_group:";
+
+/** Text shown in the group chat when the bot is added, prompting an admin
+ *  to claim it for lead notifications. */
+const CLAIM_PROMPT_TEXT =
+  "Hi! I'm HomeLeadBot 🏠 — I help real estate agents post listings, " +
+  "capture buyer leads, and deliver hot-lead notifications.\n\n" +
+  "An admin can claim this group to start receiving leads posted via " +
+  "the 'I'm interested' button on listings.";
+
 /** Render the help text (T03). Kept as a pure function so the tests can assert
  *  against it without spinning a real bot. */
 export function helpText(): string {
@@ -204,15 +223,84 @@ export function buildBotWithStores(
     await ctx.reply(unknownCommandReply(cmd));
   });
 
-  // Main-menu router. Each button gets an honest acknowledgement now (the
-  // spinner stops) and a one-line note about the feature in flight. Future
-  // tasks will replace the per-route handler with the real flow.
+  // Main-menu + group-claim router. Each menu button gets an honest
+  // acknowledgement now (the spinner stops) and a one-line note about the
+  // feature in flight. Future tasks will replace the per-route handler
+  // with the real flow.
+  //
+  // The `claim_group:<group_id>` callback (E1T2) is handled here too:
+  // whoever taps the button first records the claim (subsequent taps are
+  // no-ops with an "already claimed" toast), and the prompt message is
+  // edited in place to a "group is now claimed" byline.
   bot.on("callback_query:data", async (ctx: BotContext<Session>) => {
     const cq = ctx.callbackQuery;
     if (!cq) return; // not a callback_query update — nothing to route.
-    const route = MAIN_MENU_BUTTONS.find((b) => b.data === cq.data);
+    const data = cq.data;
+    if (!data) return; // callback query without data — nothing we can route.
+
+    if (data.startsWith(CLAIM_GROUP_PREFIX)) {
+      const claimedBy = ctx.from?.id;
+      if (claimedBy === undefined) {
+        await ctx.answerCallbackQuery({ text: "Could not identify you — try again from a Telegram account." });
+        return;
+      }
+      // Resolve the group from the button's callback data. If the data is
+      // malformed (no group_id), treat it as a no-op and answer the query.
+      const groupIdStr = data.slice(CLAIM_GROUP_PREFIX.length);
+      const groupId = Number.parseInt(groupIdStr, 10);
+      if (!Number.isFinite(groupId)) {
+        await ctx.answerCallbackQuery({ text: "Malformed claim request." });
+        return;
+      }
+      const { claim, isNew } = await groupStore.claim(
+        { id: groupId, type: "group" },
+        claimedBy,
+      );
+      if (isNew) {
+        // Answer the callback FIRST so the spinner stops immediately, then
+        // update the message text. (Answering later risks a stuck spinner
+        // if the edit throws.)
+        await ctx.answerCallbackQuery({ text: "Group claimed!" });
+        try {
+          await ctx.editMessageText("This group is now claimed. Lead notifications will route to the claiming agent.");
+        } catch {
+          // The message may already be deleted or uneditable (e.g. the bot
+          // was kicked). The callback is already answered, so the user sees
+          // their toast; no further action needed.
+        }
+      } else {
+        const existingBy = claim.claimed_by === claimedBy
+          ? "You already claimed this group."
+          : "This group is already claimed by another agent.";
+        await ctx.answerCallbackQuery({ text: existingBy });
+      }
+      return;
+    }
+
+    const route = MAIN_MENU_BUTTONS.find((b) => b.data === data);
     if (!route) return; // not for us — let other handlers / the unknown-command fallback deal with it.
     await ctx.answerCallbackQuery({ text: route.note });
+  });
+
+  // Group-addition prompt (E1T2). Telegram sends a `my_chat_member` update
+  // when the bot's status in a chat changes. We only act on transitions INTO
+  // an in-chat status (member/administrator/creator) in a group or
+  // supergroup, AND only when the group hasn't already been claimed —
+  // re-prompting on every status change would be noise.
+  bot.on("my_chat_member", async (ctx: BotContext<Session>) => {
+    const mcm = ctx.myChatMember;
+    if (!mcm) return;
+    const chat = mcm.chat;
+    if (chat.type !== "group" && chat.type !== "supergroup") return;
+    if (!BOT_IN_CHAT_STATUSES.has(mcm.new_chat_member.status)) return;
+    if (await groupStore.has(chat.id)) return; // already claimed — stay quiet.
+    await ctx.api.sendMessage(chat.id, CLAIM_PROMPT_TEXT, {
+      reply_markup: {
+        inline_keyboard: [[
+          { text: "✅ Claim this group", callback_data: `${CLAIM_GROUP_PREFIX}${chat.id}` },
+        ]],
+      },
+    });
   });
 
   // Polling-layer error boundary (T03). Catches anything that escapes the

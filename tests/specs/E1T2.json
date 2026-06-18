@@ -1,0 +1,190 @@
+[
+  {
+    "name": "When the bot is added to a group, the group receives a 'Claim this group' prompt with an inline button",
+    "steps": [
+      {
+        "send": {
+          "update": {
+            "update_id": 5001,
+            "my_chat_member": {
+              "chat": {
+                "id": -1001234567890,
+                "type": "supergroup",
+                "title": "Bay Area Buyers"
+              },
+              "from": {
+                "id": 4001,
+                "is_bot": false,
+                "first_name": "Alice"
+              },
+              "date": 0,
+              "old_chat_member": {
+                "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" },
+                "status": "left"
+              },
+              "new_chat_member": {
+                "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" },
+                "status": "member"
+              }
+            }
+          }
+        },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": {
+              "chat_id": -1001234567890,
+              "text": "Hi! I'm HomeLeadBot 🏠 — I help real estate agents post listings, capture buyer leads, and deliver hot-lead notifications.\n\nAn admin can claim this group to start receiving leads posted via the 'I'm interested' button on listings.",
+              "reply_markup": {
+                "inline_keyboard": [
+                  [
+                    { "text": "✅ Claim this group", "callback_data": "claim_group:-1001234567890" }
+                  ]
+                ]
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "When an admin taps 'Claim this group', the group is recorded as claimed and the prompt message is updated",
+    "steps": [
+      {
+        "send": {
+          "update": {
+            "update_id": 5002,
+            "my_chat_member": {
+              "chat": { "id": -1001234567891, "type": "supergroup", "title": "SOMA Listings" },
+              "from": { "id": 4002, "is_bot": false, "first_name": "Bob" },
+              "date": 0,
+              "old_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "left" },
+              "new_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "member" }
+            }
+          }
+        },
+        "expect": [
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": {
+          "callback": "claim_group:-1001234567891",
+          "userId": 4002,
+          "chatId": -1001234567891,
+          "messageId": 1
+        },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          {
+            "method": "editMessageText",
+            "payload": {
+              "chat_id": -1001234567891,
+              "text": "This group is now claimed. Lead notifications will route to the claiming agent."
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "Re-tapping the claim button after the group is already claimed is a no-op (no second claim)",
+    "steps": [
+      {
+        "send": {
+          "update": {
+            "update_id": 5003,
+            "my_chat_member": {
+              "chat": { "id": -1001234567892, "type": "group", "title": "Mission Rentals" },
+              "from": { "id": 4003, "is_bot": false, "first_name": "Carol" },
+              "date": 0,
+              "old_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "left" },
+              "new_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "member" }
+            }
+          }
+        },
+        "expect": [
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": { "callback": "claim_group:-1001234567892", "userId": 4003, "chatId": -1001234567892, "messageId": 1 },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "editMessageText" }
+        ]
+      },
+      {
+        "send": { "callback": "claim_group:-1001234567892", "userId": 4004, "chatId": -1001234567892, "messageId": 2 },
+        "expect": [
+          { "method": "answerCallbackQuery" }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "Adding the bot to an already-claimed group does NOT re-prompt (the group stays quiet)",
+    "steps": [
+      {
+        "send": {
+          "update": {
+            "update_id": 5004,
+            "my_chat_member": {
+              "chat": { "id": -1001234567893, "type": "supergroup", "title": "Sunset Buyers" },
+              "from": { "id": 4005, "is_bot": false, "first_name": "Dan" },
+              "date": 0,
+              "old_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "left" },
+              "new_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "member" }
+            }
+          }
+        },
+        "expect": [
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": { "callback": "claim_group:-1001234567893", "userId": 4005, "chatId": -1001234567893, "messageId": 3 },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "editMessageText" }
+        ]
+      },
+      {
+        "send": {
+          "update": {
+            "update_id": 5005,
+            "my_chat_member": {
+              "chat": { "id": -1001234567893, "type": "supergroup", "title": "Sunset Buyers" },
+              "from": { "id": 4006, "is_bot": false, "first_name": "Eve" },
+              "date": 1,
+              "old_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "member" },
+              "new_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "administrator" }
+            }
+          }
+        },
+        "expect": []
+      }
+    ]
+  },
+  {
+    "name": "my_chat_member updates in private chats (1:1 DMs) are ignored - no claim prompt",
+    "steps": [
+      {
+        "send": {
+          "update": {
+            "update_id": 5006,
+            "my_chat_member": {
+              "chat": { "id": 4007, "type": "private", "first_name": "Frank" },
+              "from": { "id": 4007, "is_bot": false, "first_name": "Frank" },
+              "date": 0,
+              "old_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "left" },
+              "new_chat_member": { "user": { "id": 999, "is_bot": true, "first_name": "HomeLeadBot" }, "status": "member" }
+            }
+          }
+        },
+        "expect": []
+      }
+    ]
+  }
+]

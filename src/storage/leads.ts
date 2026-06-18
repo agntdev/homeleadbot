@@ -72,6 +72,8 @@ export interface LeadStore {
   listByAgent(agentId: number): Promise<LeadRecord[]>;
   listByGroup(groupId: number): Promise<LeadRecord[]>;
   listByStatus(status: string): Promise<LeadRecord[]>;
+  /** E4T2: B-tier leads for the agent created on or after `sinceIso`. */
+  listBLeadsForAgent(agentId: number, sinceIso: string): Promise<LeadRecord[]>;
   update(id: number, patch: LeadUpdate): Promise<LeadRecord | undefined>;
   delete(id: number): Promise<boolean>;
   purgeOlderThanDays(retentionDays: number): Promise<number>;
@@ -83,12 +85,21 @@ export interface LeadStore {
   // Events (append-only audit log).
   addEvent(leadId: number, eventType: string, eventData?: unknown): Promise<LeadEventRecord>;
   listEvents(leadId: number): Promise<LeadEventRecord[]>;
+
+  /** E4T2: register which agent owns a listing. The Postgres path
+   *  resolves via JOIN; the in-memory path uses this map directly. */
+  addListingOwner(listingId: number, agentId: number): void;
 }
 
 // --- PostgreSQL implementation ---------------------------------------------
 
 class PostgresLeadStore implements LeadStore {
   constructor(private readonly pool: PgPool) {}
+
+  /** E4T2: no-op on Postgres (listings.agent_id is JOINed directly). */
+  addListingOwner(_listingId: number, _agentId: number): void {
+    /* listings.agent_id is the source of truth in Postgres; this map is in-memory only. */
+  }
 
   async create(input: LeadInput): Promise<LeadRecord> {
     const { rows } = await this.pool.query(
@@ -130,6 +141,24 @@ class PostgresLeadStore implements LeadStore {
        WHERE ls.agent_id = $1
        ORDER BY l.created_at DESC`,
       [agentId],
+    );
+    return (rows as LeadRow[]).map(rowToLead);
+  }
+
+  /**
+   * listBLeadsForAgent — every B-tier lead for the given agent created
+   * on or after `sinceIso`. Used by the E4T2 daily-digest + the E4T3
+   * follow-up scheduler. Single indexed scan in Postgres.
+   */
+  async listBLeadsForAgent(agentId: number, sinceIso: string): Promise<LeadRecord[]> {
+    const { rows } = await this.pool.query(
+      `${LEAD_COLS_BASE} l
+       JOIN listings ls ON ls.id = l.listing_id
+       WHERE ls.agent_id = $1
+         AND l.score = 'B'
+         AND l.created_at >= $2
+       ORDER BY l.created_at DESC`,
+      [agentId, sinceIso],
     );
     return (rows as LeadRow[]).map(rowToLead);
   }
@@ -302,11 +331,6 @@ class InMemoryLeadStore implements LeadStore {
   /** listing_id -> agent_id (so listByAgent can resolve leads → owning agent). */
   private listingOwner = new Map<number, number>();
 
-  /** Test-only: register the agent that owns a listing (used by listByAgent). */
-  _registerListingOwner(listingId: number, agentId: number) {
-    this.listingOwner.set(listingId, agentId);
-  }
-
   async create(input: LeadInput): Promise<LeadRecord> {
     const record: LeadRecord = {
       id: this.nextLeadId++,
@@ -323,6 +347,14 @@ class InMemoryLeadStore implements LeadStore {
     return record;
   }
 
+  /** Register which agent owns a listing. Called by the bot when a
+   *  listing is created so the in-memory lead store can resolve leads
+   *  → agents without a JOIN. The Postgres path doesn't need this (it
+   *  JOINs the listings table). */
+  addListingOwner(listingId: number, agentId: number) {
+    this.listingOwner.set(listingId, agentId);
+  }
+
   async get(id: number): Promise<LeadRecord | undefined> {
     return this.leads.get(id);
   }
@@ -334,6 +366,18 @@ class InMemoryLeadStore implements LeadStore {
     const ownedListings = new Set<number>();
     for (const [lid, owner] of this.listingOwner) if (owner === agentId) ownedListings.add(lid);
     return [...this.leads.values()].filter((l) => l.listing_id !== undefined && ownedListings.has(l.listing_id)).sort(byCreatedDesc);
+  }
+
+  async listBLeadsForAgent(agentId: number, sinceIso: string): Promise<LeadRecord[]> {
+    const ownedListings = new Set<number>();
+    for (const [lid, owner] of this.listingOwner) if (owner === agentId) ownedListings.add(lid);
+    const sinceMs = Date.parse(sinceIso);
+    return [...this.leads.values()].filter((l) => {
+      if (l.score !== "B") return false;
+      if (l.listing_id === undefined) return false;
+      if (!ownedListings.has(l.listing_id)) return false;
+      return new Date(l.created_at).getTime() >= sinceMs;
+    }).sort(byCreatedDesc);
   }
   async listByGroup(groupId: number): Promise<LeadRecord[]> {
     return [...this.leads.values()].filter((l) => l.group_id === groupId).sort(byCreatedDesc);
